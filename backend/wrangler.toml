@@ -1,0 +1,9 @@
+name = "openvokao-backend"
+main = "src/index.ts"
+compatibility_date = "2026-07-09"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "openvokao-db"
+database_id = "82cfb967-50b6-4756-b9a6-0b36f9e33eb7"
+migrations_dir = "migrations"
