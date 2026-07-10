@@ -22,9 +22,9 @@ struct ContentView: View {
                         }
                         .tag(AppTab.printer)
 
-                    BackendPortalView()
+                    SalesReportView()
                         .tabItem {
-                            Label("後台", systemImage: "globe")
+                            Label("業績", systemImage: "chart.bar.xaxis")
                         }
                         .tag(AppTab.backend)
 
@@ -34,11 +34,9 @@ struct ContentView: View {
                         }
                         .tag(AppTab.history)
 
-                    DeviceSettingsView {
-                        selectedTab = .queue
-                    }
+                    InvoiceManagementView()
                         .tabItem {
-                            Label("設定", systemImage: "gearshape")
+                            Label("發票", systemImage: "doc.text")
                         }
                         .tag(AppTab.settings)
                 }
@@ -67,67 +65,277 @@ private enum AppTab {
     }
 }
 
-struct BackendPortalView: View {
+struct SalesReportView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var destination: WebDestination?
-    @State private var alert: AppAlert?
+    @State private var startDate = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+    @State private var endDate = Date()
+    @State private var grouping: SalesReportGrouping = .product
+    @State private var showInvoiceList = false
+    @State private var salesInvoices: [SalesInvoice] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationView {
-            Form {
-                Section("後台") {
-                    Button {
-                        openBackend()
-                    } label: {
-                        Label("開啟後台", systemImage: "safari")
-                    }
-                }
+            VStack(spacing: 0) {
+                VStack(spacing: 12) {
+                    HStack(spacing: 12) {
+                        DatePicker(
+                            "開始",
+                            selection: $startDate,
+                            in: ...endDate,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
 
-                Section("裝置") {
-                    ReadOnlyRow(title: "綁定狀態", value: store.deviceProfile.isBound ? "已綁定" : "尚未綁定")
-                    ReadOnlyRow(title: "裝置名稱", value: store.deviceProfile.deviceName)
-                    if let companyName = store.deviceProfile.companyName {
-                        ReadOnlyRow(title: "公司", value: companyName)
-                    }
-                    if let storeName = store.deviceProfile.storeName {
-                        ReadOnlyRow(title: "門市", value: storeName)
-                    }
-                    if let lastVerifiedAt = store.deviceProfile.lastVerifiedAt {
-                        ReadOnlyRow(title: "最後檢查", value: DateFormatter.receipt.string(from: lastVerifiedAt))
+                        DatePicker(
+                            "結束",
+                            selection: $endDate,
+                            in: startDate...Date(),
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
                     }
 
-                    Button {
-                        Task {
-                            await store.verifyDeviceBinding()
+                    HStack {
+                        Picker("依照", selection: $grouping) {
+                            ForEach(SalesReportGrouping.allCases) { item in
+                                Text(item.title).tag(item)
+                            }
                         }
-                    } label: {
-                        Label("檢查綁定", systemImage: "checkmark.shield")
+                        .pickerStyle(.menu)
+
+                        Spacer()
+
+                        Button(showInvoiceList ? "返回報表" : "查看發票列表") {
+                            showInvoiceList.toggle()
+                        }
                     }
-                    .disabled(store.isSyncing)
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+
+                if isLoading {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                } else if showInvoiceList {
+                    invoiceListView
+                } else {
+                    reportView
                 }
             }
-            .navigationTitle("後台")
+            .navigationTitle("業績報表")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task { await loadSalesData() }
+                    } label: {
+                        if isLoading {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(isLoading)
+                }
+            }
             .task {
-                guard !store.deviceProfile.deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                await store.verifyDeviceBinding()
+                await loadSalesData()
             }
-            .sheet(item: $destination) { destination in
-                SafariView(url: destination.url)
+            .onChange(of: startDate) { _ in
+                Task { await loadSalesData() }
             }
-            .alert(item: $alert) { alert in
-                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
+            .onChange(of: endDate) { _ in
+                Task { await loadSalesData() }
             }
         }
     }
 
-    private func openBackend() {
-        guard let url = URL(string: store.deviceProfile.serverURL),
-              ["http", "https"].contains(url.scheme?.lowercased()) else {
-            alert = AppAlert(title: "無法開啟後台", message: "請先在設定填入有效的伺服器 URL")
-            return
+    private var reportView: some View {
+        VStack(spacing: 0) {
+            if reportRows.isEmpty {
+                Spacer()
+                Text("~ 搜尋不到資料 ~")
+                    .foregroundColor(.secondary)
+                Spacer()
+            } else {
+                VStack(spacing: 0) {
+                    SalesReportHeader(quantityTitle: grouping.quantityTitle)
+
+                    List {
+                        ForEach(reportRows) { row in
+                            HStack {
+                                Text(row.name)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Text("\(row.quantity)")
+                                    .frame(width: 72, alignment: .center)
+                                    .monospacedDigit()
+
+                                Text(currency(row.total))
+                                    .frame(width: 110, alignment: .trailing)
+                                    .monospacedDigit()
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .listStyle(.plain)
+
+                    HStack {
+                        Text("總計")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Text("\(reportRows.reduce(0) { $0 + $1.quantity })")
+                            .frame(width: 72, alignment: .center)
+                            .monospacedDigit()
+
+                        Text(currency(reportRows.reduce(0) { $0 + $1.total }))
+                            .frame(width: 110, alignment: .trailing)
+                            .monospacedDigit()
+                    }
+                    .font(.headline)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                }
+            }
+        }
+    }
+
+    private var invoiceListView: some View {
+        Group {
+            if salesInvoices.isEmpty {
+                Spacer()
+                Text("沒有發票資料")
+                    .foregroundColor(.secondary)
+                Spacer()
+            } else {
+                List {
+                    ForEach(salesInvoices) { invoice in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("發票: \(invoice.invoiceNumber)")
+                            Text("商品: \(invoice.items.map { $0.name }.joined(separator: "、"))")
+                            Text("數量: \(invoice.items.reduce(0) { $0 + $1.quantity })")
+                            Text("總金額: \(currency(invoice.totalAmount))")
+                            Text("建立時間: \(DateFormatter.receipt.string(from: invoice.issuedAt))")
+                            Text("列印狀態: \(invoice.printStatus.title)")
+                        }
+                        .font(.body)
+                        .padding(.vertical, 4)
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+    }
+
+    private var reportRows: [SalesReportRow] {
+        var grouped: [String: SalesReportRow] = [:]
+
+        switch grouping {
+        case .product:
+            for invoice in salesInvoices {
+                for item in invoice.items {
+                    let existing = grouped[item.name] ?? SalesReportRow(name: item.name, quantity: 0, total: 0)
+                    grouped[item.name] = SalesReportRow(
+                        name: item.name,
+                        quantity: existing.quantity + item.quantity,
+                        total: existing.total + item.amount
+                    )
+                }
+            }
+        case .status:
+            for invoice in salesInvoices {
+                let key = invoice.printStatus.title
+                let existing = grouped[key] ?? SalesReportRow(name: key, quantity: 0, total: 0)
+                grouped[key] = SalesReportRow(
+                    name: key,
+                    quantity: existing.quantity + 1,
+                    total: existing.total + invoice.totalAmount
+                )
+            }
         }
 
-        destination = WebDestination(url: url)
+        return grouped.values.sorted {
+            if $0.total == $1.total {
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            return $0.total > $1.total
+        }
+    }
+
+    private func loadSalesData() async {
+        guard store.isAuthenticated else { return }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        do {
+            salesInvoices = try await store.fetchSalesInvoices(startDate: startDate, endDate: endDate)
+        } catch {
+            salesInvoices = []
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private enum SalesReportGrouping: String, CaseIterable, Identifiable {
+    case product
+    case status
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .product:
+            return "商品"
+        case .status:
+            return "列印狀態"
+        }
+    }
+
+    var quantityTitle: String {
+        switch self {
+        case .product:
+            return "總數量"
+        case .status:
+            return "總筆數"
+        }
+    }
+}
+
+private struct SalesReportRow: Identifiable {
+    let id = UUID()
+    let name: String
+    let quantity: Int
+    let total: Int
+}
+
+private struct SalesReportHeader: View {
+    let quantityTitle: String
+
+    var body: some View {
+        HStack {
+            Text("項目名稱")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(quantityTitle)
+                .frame(width: 72, alignment: .center)
+            Text("總金額")
+                .frame(width: 110, alignment: .trailing)
+        }
+        .font(.headline)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Color(uiColor: .secondarySystemGroupedBackground))
     }
 }
 
@@ -290,350 +498,289 @@ struct PrintHistoryView: View {
     }
 }
 
-struct DeviceSettingsView: View {
-    let onHome: () -> Void
+struct InvoiceManagementView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var draftProfile = CompanyProfile.initial
-    @State private var isEditingProfile = false
-    @State private var editingSection: MemberSection?
+    @EnvironmentObject private var printerManager: PrinterManager
+    @State private var selectedDate = Date()
+    @State private var currentPage = 1
+    @State private var selectedJob: PrintJob?
     @State private var alert: AppAlert?
-    @State private var isShowingDeleteConfirmation = false
+
+    private let itemsPerPage = 15
+
+    private var filteredJobs: [PrintJob] {
+        let calendar = Calendar.current
+        return store.printJobs
+            .filter { calendar.isDate($0.issuedAt, inSameDayAs: selectedDate) }
+            .sorted { lhs, rhs in
+                if lhs.issuedAt == rhs.issuedAt {
+                    return lhs.invoiceNumber > rhs.invoiceNumber
+                }
+                return lhs.issuedAt > rhs.issuedAt
+            }
+    }
+
+    private var totalPages: Int {
+        max(1, Int(ceil(Double(filteredJobs.count) / Double(itemsPerPage))))
+    }
+
+    private var pagedJobs: [PrintJob] {
+        let startIndex = max(0, min((currentPage - 1) * itemsPerPage, filteredJobs.count))
+        let endIndex = min(startIndex + itemsPerPage, filteredJobs.count)
+        guard startIndex < endIndex else { return [] }
+        return Array(filteredJobs[startIndex..<endIndex])
+    }
+
+    private var companyDisplayName: String {
+        let trimmed = store.authSession.companyName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "目前公司" : trimmed
+    }
 
     var body: some View {
-        ZStack {
-            Color.memberBackground
-                .ignoresSafeArea()
-
+        NavigationView {
             VStack(spacing: 0) {
-                MemberCenterHeader(onHome: onHome)
+                VStack(spacing: 12) {
+                    DatePicker(
+                        "發票日期",
+                        selection: $selectedDate,
+                        in: ...Date(),
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.compact)
+                    .labelsHidden()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                ScrollView {
-                    VStack(spacing: 24) {
-                        if store.isAuthenticated {
-                            MemberCard(
-                                title: "登入帳號",
-                                isEditing: false,
-                                showsEditButton: false,
-                                onEdit: {},
-                                fields: {
-                                    ReadOnlyMemberField(title: "公司", value: store.authSession.companyName)
-                                    ReadOnlyMemberField(title: "帳號", value: store.authSession.account)
-                                    ReadOnlyMemberField(title: "姓名", value: store.authSession.userName.isEmpty ? "未填寫" : store.authSession.userName)
-                                    if !store.authSession.phone.isEmpty {
-                                        ReadOnlyMemberField(title: "電話", value: store.authSession.phone)
-                                    }
-                                }
-                            )
+                    if let syncMessage = store.syncMessage {
+                        Text(syncMessage)
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
 
-                            Button(role: .destructive) {
-                                Task {
-                                    await store.logoutAccount()
-                                }
+                if pagedJobs.isEmpty {
+                    Spacer()
+                    InvoiceEmptyState(selectedDate: selectedDate)
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(pagedJobs) { job in
+                            Button {
+                                selectedJob = job
                             } label: {
-                                Label("登出", systemImage: "rectangle.portrait.and.arrow.right")
-                                    .frame(maxWidth: .infinity)
+                                InvoiceRow(job: job)
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.plain)
                         }
+                }
+                    .listStyle(.plain)
+                }
 
-                        MemberCard(
-                            title: "會員資料",
-                            isEditing: editingSection == .member,
-                            onEdit: { beginEditing(.member) },
-                            fields: {
-                                FloatingTextField(
-                                    title: "會員名稱",
-                                    text: $draftProfile.memberName,
-                                    isEnabled: editingSection == .member,
-                                    keyboardType: .namePhonePad
-                                )
-                                FloatingTextField(
-                                    title: "手機號碼",
-                                    text: $draftProfile.phone,
-                                    isEnabled: editingSection == .member,
-                                    keyboardType: .phonePad
-                                )
-                                FloatingTextField(
-                                    title: "帳號",
-                                    text: $draftProfile.email,
-                                    isEnabled: editingSection == .member,
-                                    autocorrectionDisabled: true
-                                )
-                            }
-                        )
+                VStack(spacing: 14) {
+                    HStack(spacing: 12) {
+                        Button("上一頁") {
+                            guard currentPage > 1 else { return }
+                            currentPage -= 1
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(currentPage <= 1)
 
-                        MemberCard(
-                            title: "公司資料",
-                            isEditing: editingSection == .company,
-                            onEdit: { beginEditing(.company) },
-                            fields: {
-                                FloatingTextField(
-                                    title: "統一編號",
-                                    text: $draftProfile.taxId,
-                                    isEnabled: editingSection == .company,
-                                    keyboardType: .numberPad
-                                )
-                                FloatingTextField(
-                                    title: "公司地址",
-                                    text: $draftProfile.address,
-                                    isEnabled: editingSection == .company
-                                )
-                                FloatingTextField(
-                                    title: "App Key",
-                                    text: $draftProfile.appKey,
-                                    isEnabled: editingSection == .company,
-                                    autocorrectionDisabled: true
-                                )
-                            }
-                        )
+                        Text("第 \(currentPage) / \(totalPages) 頁")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
 
-                        if isEditingProfile {
-                            MemberActionBar(
-                                onSave: saveProfile,
-                                onCancel: cancelProfileEditing,
-                                onDelete: { isShowingDeleteConfirmation = true }
-                            )
+                        Button("下一頁") {
+                            guard currentPage < totalPages else { return }
+                            currentPage += 1
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(currentPage >= totalPages)
+                    }
+
+                    Text(companyDisplayName)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .foregroundColor(.white)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
+            }
+            .navigationTitle("發票管理")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(role: .destructive) {
+                        Task {
+                            await store.logoutAccount()
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                    }
+                }
+
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task {
+                            await store.refreshPendingJobs()
+                        }
+                    } label: {
+                        if store.isSyncing {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
                         }
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 20)
-                    .padding(.bottom, 28)
+                    .disabled(store.isSyncing || store.deviceProfile.deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-        }
-        .onAppear {
-            draftProfile = store.companyProfile
-        }
-        .task {
-            guard !store.deviceProfile.deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            await store.verifyDeviceBinding()
-        }
-        .alert(item: $alert) { alert in
-            Alert(
-                title: Text(alert.title),
-                message: Text(alert.message),
-                dismissButton: .default(Text("好"))
-            )
-        }
-        .confirmationDialog("確定要清除會員中心資料嗎？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
-            Button("刪除帳號", role: .destructive) {
-                store.clearCompanyProfile()
-                draftProfile = store.companyProfile
-                isEditingProfile = false
-                editingSection = nil
+            .onChange(of: selectedDate) { _ in
+                currentPage = 1
             }
-            Button("取消", role: .cancel) {}
-        }
-    }
-
-    private func beginEditing(_ section: MemberSection) {
-        draftProfile = store.companyProfile
-        editingSection = section
-        isEditingProfile = true
-    }
-
-    private func saveProfile() {
-        let trimmedMemberName = draftProfile.memberName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedPhone = draftProfile.phone.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedEmail = draftProfile.email.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedMemberName.isEmpty,
-              !trimmedPhone.isEmpty,
-              !trimmedEmail.isEmpty else {
-            alert = AppAlert(title: "資料未完成", message: "請填寫會員名稱、手機號碼和帳號")
-            return
-        }
-
-        draftProfile.memberName = trimmedMemberName
-        draftProfile.phone = trimmedPhone
-        draftProfile.email = trimmedEmail
-        draftProfile.companyName = draftProfile.companyName.trimmingCharacters(in: .whitespacesAndNewlines)
-        draftProfile.taxId = draftProfile.taxId.trimmingCharacters(in: .whitespacesAndNewlines)
-        draftProfile.address = draftProfile.address.trimmingCharacters(in: .whitespacesAndNewlines)
-        draftProfile.appKey = draftProfile.appKey.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        store.updateCompanyProfile(draftProfile)
-        isEditingProfile = false
-        editingSection = nil
-    }
-
-    private func cancelProfileEditing() {
-        draftProfile = store.companyProfile
-        isEditingProfile = false
-        editingSection = nil
-    }
-}
-
-private enum MemberSection {
-    case member
-    case company
-}
-
-private struct MemberCenterHeader: View {
-    let onHome: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.memberHeader
-
-            HStack {
-                Button(action: onHome) {
-                    Image(systemName: "house.fill")
-                        .font(.system(size: 36, weight: .bold))
-                        .foregroundColor(.black)
-                        .frame(width: 64, height: 64)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
+            .onChange(of: store.printJobs) { _ in
+                currentPage = min(currentPage, totalPages)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 26)
-
-            Text("會員中心")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundColor(.black)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.top, 26)
-        }
-        .frame(height: 120)
-    }
-}
-
-private struct MemberCard<Fields: View>: View {
-    let title: String
-    let isEditing: Bool
-    var showsEditButton = true
-    let onEdit: () -> Void
-    @ViewBuilder let fields: Fields
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text(title)
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-
-                Spacer()
-
-                if showsEditButton {
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 28, weight: .semibold))
-                            .foregroundColor(isEditing ? .blue : .black)
-                            .frame(width: 48, height: 48)
-                            .background(Color.black.opacity(0.06))
-                            .clipShape(Circle())
+            .sheet(item: $selectedJob) { job in
+                InvoiceDetailView(
+                    job: job,
+                    canPrint: printerManager.isPrinterReady
+                ) {
+                    Task {
+                        await reprint(job)
                     }
-                    .buttonStyle(.plain)
                 }
+                .environmentObject(printerManager)
             }
-
-            fields
+            .alert(item: $alert) { alert in
+                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 22)
-        .padding(.bottom, 22)
-        .background(Color.memberCard)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.14), radius: 3, x: 0, y: 2)
+    }
+
+    private func reprint(_ job: PrintJob) async {
+        do {
+            try printerManager.print(job)
+            await store.markPrintedAndReport(job)
+            selectedJob = nil
+            alert = AppAlert(title: "已送出列印", message: job.invoiceNumber)
+        } catch {
+            await store.markFailedAndReport(job, message: error.localizedDescription)
+            alert = AppAlert(title: "列印失敗", message: error.localizedDescription)
+        }
     }
 }
 
-private struct FloatingTextField: View {
-    let title: String
-    @Binding var text: String
-    var isEnabled: Bool
-    var keyboardType: UIKeyboardType = .default
-    var autocorrectionDisabled = false
+private struct InvoiceEmptyState: View {
+    let selectedDate: Date
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            TextField("", text: $text)
-                .keyboardType(keyboardType)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(autocorrectionDisabled)
-                .disabled(!isEnabled)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(.primary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 13)
-                .frame(minHeight: 66)
-                .background(Color.white)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(Color.memberFieldBorder, lineWidth: 2)
-                )
-
-            Text(title)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundColor(Color.memberLabel)
-                .padding(.horizontal, 8)
-                .background(Color.memberCard)
-                .offset(x: 18, y: -10)
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 28))
+                .foregroundColor(.secondary)
+            Text("沒有發票記錄")
+                .font(.headline)
+            Text(DateFormatter.invoiceDate.string(from: selectedDate))
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
         }
-        .padding(.top, 12)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
     }
 }
 
-private struct ReadOnlyMemberField: View {
-    let title: String
-    let value: String
+private struct InvoiceRow: View {
+    let job: PrintJob
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundColor(Color.memberLabel)
-
-            Text(value)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(.primary)
+        HStack(spacing: 12) {
+            Text(job.invoiceNumber)
+                .font(.body.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 13)
-                .background(Color.white)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(Color.memberFieldBorder, lineWidth: 2)
-                )
+
+            Text(currency(job.totalAmount))
+                .font(.body.weight(.semibold))
+                .monospacedDigit()
+                .frame(width: 90, alignment: .trailing)
+
+            StatusBadge(status: job.status)
+                .frame(width: 74)
+
+            Image(systemName: "square.and.pencil")
+                .foregroundColor(.secondary)
         }
+        .padding(.vertical, 6)
     }
 }
 
-private struct MemberActionBar: View {
-    let onSave: () -> Void
-    let onCancel: () -> Void
-    let onDelete: () -> Void
+private struct InvoiceDetailView: View {
+    let job: PrintJob
+    let canPrint: Bool
+    let onPrint: () -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 12) {
-                Button(action: onSave) {
-                    Label("儲存", systemImage: "checkmark")
-                        .frame(maxWidth: .infinity)
+        NavigationView {
+            List {
+                Section("發票資訊") {
+                    ReadOnlyRow(title: "號碼", value: job.invoiceNumber)
+                    ReadOnlyRow(title: "狀態", value: job.status.rawValue)
+                    ReadOnlyRow(title: "時間", value: DateFormatter.receipt.string(from: job.issuedAt))
+                    ReadOnlyRow(title: "隨機碼", value: job.randomNumber)
+                    ReadOnlyRow(title: "總金額", value: currency(job.totalAmount))
                 }
-                .buttonStyle(.borderedProminent)
 
-                Button(action: onCancel) {
-                    Label("取消", systemImage: "xmark")
-                        .frame(maxWidth: .infinity)
+                Section("營業人") {
+                    ReadOnlyRow(title: "公司", value: job.sellerName ?? "未提供")
+                    ReadOnlyRow(title: "統編", value: job.sellerIdentifier ?? "未提供")
+                    ReadOnlyRow(title: "買方統編", value: job.buyerIdentifier ?? "無")
                 }
-                .buttonStyle(.bordered)
-            }
 
-            Button(role: .destructive, action: onDelete) {
-                Label("刪除帳號", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
+                Section("商品明細") {
+                    ForEach(job.items) { item in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.name)
+                                Text("單價 \(currency(item.unitPrice)) x \(item.quantity)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Text(currency(item.amount))
+                                .monospacedDigit()
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                if let lastMessage = job.lastMessage, !lastMessage.isEmpty {
+                    Section("處理結果") {
+                        Text(lastMessage)
+                            .foregroundColor(.secondary)
+                    }
+                }
             }
-            .buttonStyle(.bordered)
+            .navigationTitle("發票明細")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("關閉") { dismiss() }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(job.status == .pending ? "列印" : "補印") {
+                        onPrint()
+                    }
+                    .disabled(!canPrint)
+                }
+            }
         }
     }
 }
@@ -756,6 +903,12 @@ func currency(_ amount: Int) -> String {
 }
 
 private extension DateFormatter {
+    static let invoiceDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     static let receipt: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy/MM/dd HH:mm"

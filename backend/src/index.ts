@@ -25,7 +25,6 @@ type PrintJobPayload = {
 type DeviceSession = {
   id: string;
   company_id: number;
-  store_id: number | null;
   name: string;
 };
 
@@ -92,6 +91,11 @@ export default {
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         const session = await requireUserSession(request, env);
         return logoutAccount(env, session);
+      }
+
+      if (url.pathname === "/api/reports/sales" && request.method === "GET") {
+        const session = await requireUserSession(request, env);
+        return listSalesReport(env, session, url);
       }
 
       if (url.pathname === "/api/devices/register" && request.method === "POST") {
@@ -295,14 +299,6 @@ async function registerAccount(request: Request, env: Env): Promise<Response> {
     .bind(`AMEGO_APP_KEY_${companyId}`, companyId)
     .run();
 
-  const storeResult = await env.DB.prepare(
-    `INSERT INTO stores (id, company_id, name, address)
-     VALUES (NULL, ?, ?, ?)`
-  )
-    .bind(companyId, "預設門市", address)
-    .run();
-  const storeId = Number(storeResult.meta.last_row_id);
-
   const passwordHash = await hashPassword(input.password);
 
   const userResult = await env.DB.prepare(
@@ -321,7 +317,7 @@ async function registerAccount(request: Request, env: Env): Promise<Response> {
     .bind(sessionToken, userId, companyId)
     .run();
 
-  const device = await ensureCompanyDevice(env, companyId, storeId, deviceName, platform);
+  const device = await ensureCompanyDevice(env, companyId, deviceName, platform);
 
   return jsonAuthPayload({
     authToken: sessionToken,
@@ -404,7 +400,6 @@ async function loginAccount(request: Request, env: Env): Promise<Response> {
   const device = await ensureCompanyDevice(
     env,
     row.company_id,
-    null,
     normalizeOptionalString(input.deviceName) ?? "iPhone",
     normalizeOptionalString(input.platform) ?? "ios"
   );
@@ -461,26 +456,138 @@ async function logoutAccount(env: Env, session: UserSession): Promise<Response> 
   return json({ ok: true });
 }
 
+type SalesInvoiceRow = {
+  invoice_id: string;
+  invoice_number: string;
+  random_number: string;
+  issued_at: string;
+  seller_name: string | null;
+  seller_identifier: string | null;
+  buyer_identifier: string | null;
+  total_amount: number;
+  print_status: string | null;
+  item_id: string | null;
+  item_name: string | null;
+  item_quantity: number | null;
+  item_unit_price: number | null;
+  item_amount: number | null;
+};
+
+async function listSalesReport(env: Env, session: UserSession, url: URL): Promise<Response> {
+  const startDate = normalizeReportDate(url.searchParams.get("startDate"), "startDate");
+  const endDate = normalizeReportDate(url.searchParams.get("endDate"), "endDate");
+
+  if (startDate > endDate) {
+    throw new HttpError(400, "date_range_invalid");
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT
+       i.id AS invoice_id,
+       i.invoice_number,
+       i.random_number,
+       i.issued_at,
+       i.seller_name,
+       i.seller_identifier,
+       i.buyer_identifier,
+       i.total_amount,
+       latest_job.status AS print_status,
+       ii.id AS item_id,
+       ii.name AS item_name,
+       ii.quantity AS item_quantity,
+       ii.unit_price AS item_unit_price,
+       ii.amount AS item_amount
+     FROM invoices i
+     LEFT JOIN (
+       SELECT pj.invoice_id, pj.status
+       FROM print_jobs pj
+       INNER JOIN (
+         SELECT invoice_id, MAX(created_at) AS max_created_at
+         FROM print_jobs
+         WHERE company_id = ?
+         GROUP BY invoice_id
+       ) latest
+         ON latest.invoice_id = pj.invoice_id
+        AND latest.max_created_at = pj.created_at
+       WHERE pj.company_id = ?
+     ) latest_job ON latest_job.invoice_id = i.id
+     LEFT JOIN invoice_items ii ON ii.invoice_id = i.id
+     WHERE i.company_id = ?
+       AND date(i.issued_at) BETWEEN date(?) AND date(?)
+     ORDER BY i.issued_at DESC, ii.rowid ASC`
+  )
+    .bind(session.company_id, session.company_id, session.company_id, startDate, endDate)
+    .all<SalesInvoiceRow>();
+
+  const invoices = new Map<string, {
+    id: string;
+    invoiceNumber: string;
+    randomNumber: string;
+    issuedAt: string;
+    sellerName: string | null;
+    sellerIdentifier: string | null;
+    buyerIdentifier: string | null;
+    totalAmount: number;
+    printStatus: string;
+    items: Array<{
+      id: string;
+      name: string;
+      quantity: number;
+      unitPrice: number;
+      amount: number;
+    }>;
+  }>();
+
+  for (const row of result.results) {
+    if (!invoices.has(row.invoice_id)) {
+      invoices.set(row.invoice_id, {
+        id: row.invoice_id,
+        invoiceNumber: row.invoice_number,
+        randomNumber: row.random_number,
+        issuedAt: row.issued_at,
+        sellerName: row.seller_name,
+        sellerIdentifier: row.seller_identifier,
+        buyerIdentifier: row.buyer_identifier,
+        totalAmount: Number(row.total_amount ?? 0),
+        printStatus: normalizePrintStatusValue(row.print_status),
+        items: []
+      });
+    }
+
+    if (row.item_id && row.item_name) {
+      invoices.get(row.invoice_id)?.items.push({
+        id: row.item_id,
+        name: row.item_name,
+        quantity: Number(row.item_quantity ?? 0),
+        unitPrice: Number(row.item_unit_price ?? 0),
+        amount: Number(row.item_amount ?? 0)
+      });
+    }
+  }
+
+  return json({
+    invoices: Array.from(invoices.values())
+  });
+}
+
 async function registerDevice(request: Request, env: Env): Promise<Response> {
   const input = await readJson<{
     companyId: number | string;
-    storeId?: number | string | null;
     name: string;
     platform?: string;
   }>(request);
 
   const companyId = parsePositiveId(input.companyId, "companyId");
-  const storeId = await validateStoreId(env, companyId, input.storeId ?? null);
   requireString(input.name, "name");
 
   const id = crypto.randomUUID();
   const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
 
   await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, store_id, name, token, platform)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO devices (id, company_id, name, token, platform)
+     VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(id, companyId, storeId, input.name, token, input.platform ?? "ios")
+    .bind(id, companyId, input.name, token, input.platform ?? "ios")
     .run();
 
   return json({ id, token });
@@ -494,12 +601,9 @@ async function getDeviceMe(env: Env, device: DeviceSession): Promise<Response> {
        d.platform,
       d.company_id,
       c.name AS company_name,
-      d.store_id,
-       s.name AS store_name,
        d.last_seen_at
      FROM devices d
      LEFT JOIN companies c ON c.id = d.company_id
-     LEFT JOIN stores s ON s.id = d.store_id
      WHERE d.id = ?`
   )
     .bind(device.id)
@@ -509,8 +613,6 @@ async function getDeviceMe(env: Env, device: DeviceSession): Promise<Response> {
       platform: string;
       company_id: number;
       company_name: string | null;
-      store_id: number | null;
-      store_name: string | null;
       last_seen_at: string | null;
     }>();
 
@@ -524,8 +626,6 @@ async function getDeviceMe(env: Env, device: DeviceSession): Promise<Response> {
     platform: row.platform,
     companyId: row.company_id,
     companyName: row.company_name,
-    storeId: row.store_id,
-    storeName: row.store_name,
     lastSeenAt: row.last_seen_at,
     isBound: true
   });
@@ -962,15 +1062,7 @@ async function createCompany(request: Request, env: Env): Promise<Response> {
     .bind(`AMEGO_APP_KEY_${id}`, id)
     .run();
 
-  const storeResult = await env.DB.prepare(
-    `INSERT INTO stores (id, company_id, name)
-     VALUES (NULL, ?, ?)`
-  )
-    .bind(id, "預設門市")
-    .run();
-  const storeId = Number(storeResult.meta.last_row_id);
-
-  return json({ id, storeId });
+  return json({ id });
 }
 
 async function listProducts(env: Env, url: URL): Promise<Response> {
@@ -1141,7 +1233,6 @@ async function adminListPrintJobs(env: Env): Promise<Response> {
 async function createPrintJob(request: Request, env: Env): Promise<Response> {
   const input = await readJson<{
     companyId: number | string;
-    storeId?: number | string | null;
     deviceId?: string;
     invoiceNumber: string;
     randomNumber: string;
@@ -1156,7 +1247,6 @@ async function createPrintJob(request: Request, env: Env): Promise<Response> {
   }>(request);
 
   const companyId = parsePositiveId(input.companyId, "companyId");
-  const storeId = await validateStoreId(env, companyId, input.storeId ?? null);
   requireString(input.invoiceNumber, "invoiceNumber");
   requireString(input.randomNumber, "randomNumber");
   requireString(input.sellerIdentifier, "sellerIdentifier");
@@ -1171,15 +1261,14 @@ async function createPrintJob(request: Request, env: Env): Promise<Response> {
 
   await env.DB.prepare(
     `INSERT INTO invoices (
-       id, company_id, store_id, invoice_number, random_number, issued_at,
+       id, company_id, invoice_number, random_number, issued_at,
        seller_name, seller_identifier, buyer_identifier, total_amount
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       invoiceId,
       companyId,
-      storeId,
       input.invoiceNumber,
       input.randomNumber,
       issuedAt,
@@ -1228,10 +1317,10 @@ async function createPrintJob(request: Request, env: Env): Promise<Response> {
   };
 
   await env.DB.prepare(
-    `INSERT INTO print_jobs (id, company_id, store_id, device_id, invoice_id, payload_json)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO print_jobs (id, company_id, device_id, invoice_id, payload_json)
+     VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(jobId, companyId, storeId, input.deviceId ?? null, invoiceId, JSON.stringify(payload))
+    .bind(jobId, companyId, input.deviceId ?? null, invoiceId, JSON.stringify(payload))
     .run();
 
   return json({ id: jobId, invoiceId, payload });
@@ -1244,7 +1333,7 @@ async function requireDevice(request: Request, env: Env): Promise<DeviceSession>
   }
 
   const device = await env.DB.prepare(
-    `SELECT id, company_id, store_id, name
+    `SELECT id, company_id, name
      FROM devices
      WHERE token = ?`
   )
@@ -1378,27 +1467,6 @@ async function fetchCatalogProductById(env: Env, companyId: number, productId: n
   return mapCatalogProductRow(row);
 }
 
-async function validateStoreId(env: Env, companyId: number, storeId: number | string | null): Promise<number | null> {
-  if (storeId == null || storeId === "") {
-    return null;
-  }
-
-  const normalized = parsePositiveId(storeId, "storeId");
-  const store = await env.DB.prepare(
-    `SELECT id
-     FROM stores
-     WHERE id = ? AND company_id = ?`
-  )
-    .bind(normalized, companyId)
-    .first<{ id: number }>();
-
-  if (!store) {
-    throw new HttpError(400, "invalid_store_id");
-  }
-
-  return normalized;
-}
-
 async function validateCategoryId(
   env: Env,
   companyId: number,
@@ -1473,8 +1541,19 @@ function normalizeOptionalString(value: unknown): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+function normalizeReportDate(value: string | null, field: string): string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new HttpError(400, `${field}_invalid`);
+  }
+  return value;
+}
+
 function normalizeStatus(value: unknown): string {
   return value === "隱藏" ? "隱藏" : "顯示";
+}
+
+function normalizePrintStatusValue(value: unknown): string {
+  return value === "printed" || value === "failed" ? value : "pending";
 }
 
 function normalizeTaxType(value: unknown): string {
@@ -1603,14 +1682,12 @@ function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
 async function ensureCompanyDevice(
   env: Env,
   companyId: number,
-  preferredStoreId: number | null,
   deviceName: string,
   platform: string
 ) {
   const existing = await env.DB.prepare(
-    `SELECT d.id, d.token, d.name, d.store_id, s.name AS store_name
+    `SELECT d.id, d.token, d.name
      FROM devices d
-     LEFT JOIN stores s ON s.id = d.store_id
      WHERE d.company_id = ?
        AND d.name = ?
        AND d.platform = ?
@@ -1622,61 +1699,36 @@ async function ensureCompanyDevice(
       id: string;
       token: string;
       name: string;
-      store_id: number | null;
-      store_name: string | null;
     }>();
 
   if (existing) {
     return {
       id: existing.id,
       token: existing.token,
-      name: existing.name,
-      storeId: existing.store_id,
-      storeName: existing.store_name
+      name: existing.name
     };
   }
-
-  const defaultStore = preferredStoreId != null
-    ? await env.DB.prepare(
-        `SELECT id, name
-         FROM stores
-         WHERE id = ? AND company_id = ?`
-      )
-        .bind(preferredStoreId, companyId)
-        .first<{ id: number; name: string }>()
-    : await env.DB.prepare(
-        `SELECT id, name
-         FROM stores
-         WHERE company_id = ?
-         ORDER BY id ASC
-         LIMIT 1`
-      )
-        .bind(companyId)
-        .first<{ id: number; name: string }>();
 
   const id = crypto.randomUUID();
   const token = generateSessionToken();
   await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, store_id, name, token, platform)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO devices (id, company_id, name, token, platform)
+     VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(id, companyId, defaultStore?.id ?? null, deviceName, token, platform)
+    .bind(id, companyId, deviceName, token, platform)
     .run();
 
   return {
     id,
     token,
-    name: deviceName,
-    storeId: defaultStore?.id ?? null,
-    storeName: defaultStore?.name ?? null
+    name: deviceName
   };
 }
 
 async function fetchPrimaryCompanyDevice(env: Env, companyId: number) {
   const device = await env.DB.prepare(
-    `SELECT d.id, d.token, d.name, d.store_id, s.name AS store_name
+    `SELECT d.id, d.token, d.name
      FROM devices d
-     LEFT JOIN stores s ON s.id = d.store_id
      WHERE d.company_id = ?
      ORDER BY d.created_at ASC
      LIMIT 1`
@@ -1686,28 +1738,24 @@ async function fetchPrimaryCompanyDevice(env: Env, companyId: number) {
       id: string;
       token: string;
       name: string;
-      store_id: number | null;
-      store_name: string | null;
     }>();
 
   if (device) {
     return {
       id: device.id,
       token: device.token,
-      name: device.name,
-      storeId: device.store_id,
-      storeName: device.store_name
+      name: device.name
     };
   }
 
-  return ensureCompanyDevice(env, companyId, null, "iPhone", "ios");
+  return ensureCompanyDevice(env, companyId, "iPhone", "ios");
 }
 
 function jsonAuthPayload(payload: {
   authToken: string;
   user: { id: number; name: string | null; account: string; phone: string | null };
   company: { id: number; name: string; taxId: string; address: string | null; appKey: string };
-  device: { id: string; token: string; name: string; storeId: number | null; storeName: string | null };
+  device: { id: string; token: string; name: string };
 }): Response {
   return json(payload);
 }

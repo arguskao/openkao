@@ -149,7 +149,7 @@ struct ProductCatalogView: View {
             Image(systemName: "shippingbox")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
-            Text("請先在設定頁填入裝置 token")
+            Text("請先登入並完成裝置綁定")
                 .font(.headline)
             Text("商品分類和商品管理會跟後台綁定的公司資料同步。")
                 .font(.subheadline)

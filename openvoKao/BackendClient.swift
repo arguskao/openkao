@@ -230,6 +230,16 @@ struct BackendClient {
         )
     }
 
+    func fetchSalesInvoices(startDate: Date, endDate: Date) async throws -> [SalesInvoice] {
+        let formatter = DateFormatter.reportQuery
+        let response: SalesInvoicesResponse = try await request(
+            path: "/api/reports/sales?startDate=\(formatter.string(from: startDate))&endDate=\(formatter.string(from: endDate))",
+            method: "GET",
+            authorization: .auth
+        )
+        return response.invoices
+    }
+
     private func request<ResponseBody: Decodable>(
         path: String,
         method: String,
@@ -296,8 +306,6 @@ struct BackendDevice: Decodable {
     let platform: String
     let companyId: Int
     let companyName: String?
-    let storeId: Int?
-    let storeName: String?
     let lastSeenAt: String?
     let isBound: Bool
 }
@@ -420,8 +428,6 @@ struct AuthDevice: Decodable {
     let id: String
     let token: String
     let name: String
-    let storeId: Int?
-    let storeName: String?
 }
 
 private struct EmptyRequest: Encodable {}
@@ -490,6 +496,10 @@ private struct CatalogSettingsResponse: Decodable {
     let priceDecimalPlaces: Int
 }
 
+private struct SalesInvoicesResponse: Decodable {
+    let invoices: [SalesInvoice]
+}
+
 private struct EmptyResponse: Decodable {
     let ok: Bool?
 }
@@ -549,6 +559,14 @@ private extension ISO8601DateFormatter {
 }
 
 private extension DateFormatter {
+    static let reportQuery: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     static let backendSQL: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

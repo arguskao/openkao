@@ -40,6 +40,46 @@ enum PrintJobStatus: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct SalesInvoice: Identifiable, Codable, Equatable {
+    var id: String
+    var invoiceNumber: String
+    var randomNumber: String
+    var issuedAt: Date
+    var sellerName: String?
+    var sellerIdentifier: String?
+    var buyerIdentifier: String?
+    var totalAmount: Int
+    var printStatus: SalesInvoiceStatus
+    var items: [SalesInvoiceItem]
+}
+
+struct SalesInvoiceItem: Identifiable, Codable, Equatable {
+    var id: String
+    var name: String
+    var quantity: Int
+    var unitPrice: Int
+    var amount: Int
+}
+
+enum SalesInvoiceStatus: String, Codable, CaseIterable, Identifiable {
+    case pending
+    case printed
+    case failed
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pending:
+            return "待列印"
+        case .printed:
+            return "已列印"
+        case .failed:
+            return "列印失敗"
+        }
+    }
+}
+
 struct DeviceProfile: Codable, Equatable {
     var deviceName: String
     var serverURL: String
@@ -47,7 +87,6 @@ struct DeviceProfile: Codable, Equatable {
     var isBound: Bool
     var backendDeviceId: String?
     var companyName: String?
-    var storeName: String?
     var lastVerifiedAt: Date?
 
     static let initial = DeviceProfile(
@@ -57,7 +96,6 @@ struct DeviceProfile: Codable, Equatable {
         isBound: false,
         backendDeviceId: nil,
         companyName: nil,
-        storeName: nil,
         lastVerifiedAt: nil
     )
 
@@ -68,7 +106,6 @@ struct DeviceProfile: Codable, Equatable {
         case isBound
         case backendDeviceId
         case companyName
-        case storeName
         case lastVerifiedAt
     }
 
@@ -79,7 +116,6 @@ struct DeviceProfile: Codable, Equatable {
         isBound: Bool,
         backendDeviceId: String?,
         companyName: String?,
-        storeName: String?,
         lastVerifiedAt: Date?
     ) {
         self.deviceName = deviceName
@@ -88,7 +124,6 @@ struct DeviceProfile: Codable, Equatable {
         self.isBound = isBound
         self.backendDeviceId = backendDeviceId
         self.companyName = companyName
-        self.storeName = storeName
         self.lastVerifiedAt = lastVerifiedAt
     }
 
@@ -100,7 +135,6 @@ struct DeviceProfile: Codable, Equatable {
         isBound = try container.decodeIfPresent(Bool.self, forKey: .isBound) ?? false
         backendDeviceId = try container.decodeIfPresent(String.self, forKey: .backendDeviceId)
         companyName = try container.decodeIfPresent(String.self, forKey: .companyName)
-        storeName = try container.decodeIfPresent(String.self, forKey: .storeName)
         lastVerifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastVerifiedAt)
     }
 }

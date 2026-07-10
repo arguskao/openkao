@@ -202,14 +202,12 @@ final class AppStore: ObservableObject {
             deviceProfile.isBound = device.isBound
             deviceProfile.backendDeviceId = device.id
             deviceProfile.companyName = device.companyName
-            deviceProfile.storeName = device.storeName
             deviceProfile.lastVerifiedAt = Date()
             syncMessage = "已綁定：\(device.companyName ?? device.name)"
         } catch {
             deviceProfile.isBound = false
             deviceProfile.backendDeviceId = nil
             deviceProfile.companyName = nil
-            deviceProfile.storeName = nil
             deviceProfile.lastVerifiedAt = nil
             syncMessage = error.localizedDescription
         }
@@ -318,8 +316,11 @@ final class AppStore: ObservableObject {
         deviceProfile.isBound = false
         deviceProfile.backendDeviceId = nil
         deviceProfile.companyName = nil
-        deviceProfile.storeName = nil
         deviceProfile.lastVerifiedAt = nil
+    }
+
+    func fetchSalesInvoices(startDate: Date, endDate: Date) async throws -> [SalesInvoice] {
+        try await authClient.fetchSalesInvoices(startDate: startDate, endDate: endDate)
     }
 
     private var backendClient: BackendClient {
@@ -365,7 +366,6 @@ final class AppStore: ObservableObject {
         deviceProfile.isBound = true
         deviceProfile.backendDeviceId = response.device.id
         deviceProfile.companyName = response.company.name
-        deviceProfile.storeName = response.device.storeName
         deviceProfile.lastVerifiedAt = Date()
     }
 
@@ -379,7 +379,6 @@ final class AppStore: ObservableObject {
         deviceProfile.isBound = false
         deviceProfile.backendDeviceId = nil
         deviceProfile.companyName = nil
-        deviceProfile.storeName = nil
         deviceProfile.lastVerifiedAt = nil
     }
 
