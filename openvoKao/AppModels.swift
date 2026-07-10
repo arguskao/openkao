@@ -105,6 +105,94 @@ struct DeviceProfile: Codable, Equatable {
     }
 }
 
+struct AuthSession: Codable, Equatable {
+    var authToken: String
+    var userId: Int
+    var userName: String
+    var account: String
+    var phone: String
+    var companyId: Int
+    var companyName: String
+    var taxId: String
+    var address: String
+    var appKey: String
+
+    static let empty = AuthSession(
+        authToken: "",
+        userId: 0,
+        userName: "",
+        account: "",
+        phone: "",
+        companyId: 0,
+        companyName: "",
+        taxId: "",
+        address: "",
+        appKey: ""
+    )
+
+    var isAuthenticated: Bool {
+        !authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && companyId > 0
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case authToken
+        case userId
+        case userName
+        case account
+        case phone
+        case companyId
+        case companyName
+        case taxId
+        case address
+        case appKey
+    }
+
+    init(
+        authToken: String,
+        userId: Int,
+        userName: String,
+        account: String,
+        phone: String,
+        companyId: Int,
+        companyName: String,
+        taxId: String,
+        address: String,
+        appKey: String
+    ) {
+        self.authToken = authToken
+        self.userId = userId
+        self.userName = userName
+        self.account = account
+        self.phone = phone
+        self.companyId = companyId
+        self.companyName = companyName
+        self.taxId = taxId
+        self.address = address
+        self.appKey = appKey
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        authToken = try container.decodeIfPresent(String.self, forKey: .authToken) ?? ""
+        if let numeric = try container.decodeIfPresent(Int.self, forKey: .userId) {
+            userId = numeric
+        } else if let legacy = try container.decodeIfPresent(String.self, forKey: .userId),
+                  let numeric = Int(legacy) {
+            userId = numeric
+        } else {
+            userId = 0
+        }
+        userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? ""
+        account = try container.decodeIfPresent(String.self, forKey: .account) ?? ""
+        phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        companyId = try container.decodeIfPresent(Int.self, forKey: .companyId) ?? 0
+        companyName = try container.decodeIfPresent(String.self, forKey: .companyName) ?? ""
+        taxId = try container.decodeIfPresent(String.self, forKey: .taxId) ?? ""
+        address = try container.decodeIfPresent(String.self, forKey: .address) ?? ""
+        appKey = try container.decodeIfPresent(String.self, forKey: .appKey) ?? ""
+    }
+}
+
 struct CompanyProfile: Codable, Equatable {
     var memberName: String
     var phone: String

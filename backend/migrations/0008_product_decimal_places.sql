@@ -1,0 +1,1 @@
+ALTER TABLE products ADD COLUMN decimal_places INTEGER NOT NULL DEFAULT 0;

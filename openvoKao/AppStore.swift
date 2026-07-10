@@ -15,17 +15,45 @@ final class AppStore: ObservableObject {
         didSet { save(companyProfile, key: companyProfileKey) }
     }
 
+    @Published var authSession: AuthSession {
+        didSet { save(authSession, key: authSessionKey) }
+    }
+
+    @Published var catalogCategories: [CatalogCategory] {
+        didSet { save(catalogCategories, key: catalogCategoriesKey) }
+    }
+
+    @Published var catalogProducts: [CatalogProduct] {
+        didSet { save(catalogProducts, key: catalogProductsKey) }
+    }
+
+    @Published var catalogPriceDecimalPlaces: Int {
+        didSet { save(catalogPriceDecimalPlaces, key: catalogPriceDecimalPlacesKey) }
+    }
+
     @Published private(set) var isSyncing = false
     @Published private(set) var syncMessage: String?
 
     private let printJobsKey = "printJobs"
     private let deviceProfileKey = "deviceProfile"
     private let companyProfileKey = "companyProfile"
+    private let authSessionKey = "authSession"
+    private let catalogCategoriesKey = "catalogCategories"
+    private let catalogProductsKey = "catalogProducts"
+    private let catalogPriceDecimalPlacesKey = "catalogPriceDecimalPlaces"
 
     init() {
         printJobs = Self.load([PrintJob].self, key: printJobsKey) ?? Self.samplePrintJobs
         deviceProfile = Self.load(DeviceProfile.self, key: deviceProfileKey) ?? .initial
         companyProfile = Self.load(CompanyProfile.self, key: companyProfileKey) ?? .initial
+        authSession = Self.load(AuthSession.self, key: authSessionKey) ?? .empty
+        catalogCategories = Self.load([CatalogCategory].self, key: catalogCategoriesKey) ?? []
+        catalogProducts = Self.load([CatalogProduct].self, key: catalogProductsKey) ?? []
+        catalogPriceDecimalPlaces = Self.load(Int.self, key: catalogPriceDecimalPlacesKey) ?? 0
+    }
+
+    var isAuthenticated: Bool {
+        authSession.isAuthenticated
     }
 
     var pendingJobs: [PrintJob] {
@@ -64,6 +92,103 @@ final class AppStore: ObservableObject {
         } catch {
             syncMessage = error.localizedDescription
         }
+    }
+
+    func refreshCatalog() async {
+        isSyncing = true
+        syncMessage = "同步商品中"
+        defer { isSyncing = false }
+
+        do {
+            async let categories = backendClient.fetchCatalogCategories()
+            async let productPayload = backendClient.fetchCatalogProducts()
+            catalogCategories = try await categories.sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            let products = try await productPayload
+            catalogPriceDecimalPlaces = products.priceDecimalPlaces
+            catalogProducts = products.products.sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            syncMessage = "已同步 \(catalogCategories.count) 個分類、\(catalogProducts.count) 個商品"
+        } catch {
+            syncMessage = error.localizedDescription
+        }
+    }
+
+    func createCategory(name: String, sortOrder: Int, status: String) async throws {
+        _ = try await backendClient.createCatalogCategory(name: name, sortOrder: sortOrder, status: status)
+        await refreshCatalog()
+    }
+
+    func updateCategory(id: Int, name: String, sortOrder: Int, status: String) async throws {
+        _ = try await backendClient.updateCatalogCategory(id: id, name: name, sortOrder: sortOrder, status: status)
+        await refreshCatalog()
+    }
+
+    func deleteCategory(id: Int) async throws {
+        try await backendClient.deleteCatalogCategory(id: id)
+        await refreshCatalog()
+    }
+
+    func createProduct(
+        categoryId: Int?,
+        name: String,
+        price: Int,
+        imagePath: String?,
+        status: String,
+        taxType: String,
+        sortOrder: Int
+    ) async throws {
+        _ = try await backendClient.createCatalogProduct(
+            categoryId: categoryId,
+            name: name,
+            price: price,
+            imagePath: imagePath,
+            status: status,
+            taxType: taxType,
+            sortOrder: sortOrder
+        )
+        await refreshCatalog()
+    }
+
+    func updateProduct(
+        id: Int,
+        categoryId: Int?,
+        name: String,
+        price: Int,
+        imagePath: String?,
+        status: String,
+        taxType: String,
+        sortOrder: Int
+    ) async throws {
+        _ = try await backendClient.updateCatalogProduct(
+            id: id,
+            categoryId: categoryId,
+            name: name,
+            price: price,
+            imagePath: imagePath,
+            status: status,
+            taxType: taxType,
+            sortOrder: sortOrder
+        )
+        await refreshCatalog()
+    }
+
+    func updateCatalogPriceDecimalPlaces(_ value: Int) async throws {
+        _ = try await backendClient.updateCatalogPriceSettings(priceDecimalPlaces: value)
+        await refreshCatalog()
+    }
+
+    func deleteProduct(id: Int) async throws {
+        try await backendClient.deleteCatalogProduct(id: id)
+        await refreshCatalog()
     }
 
     func verifyDeviceBinding() async {
@@ -130,6 +255,64 @@ final class AppStore: ObservableObject {
         companyProfile = .initial
     }
 
+    func registerAccount(
+        name: String,
+        phone: String,
+        account: String,
+        password: String,
+        companyName: String,
+        taxId: String,
+        address: String
+    ) async throws {
+        let response = try await authClient.registerAccount(
+            name: name,
+            phone: phone,
+            account: account,
+            password: password,
+            companyName: companyName,
+            taxId: taxId,
+            address: address,
+            deviceName: deviceProfile.deviceName
+        )
+        applyAuth(response)
+        await verifyDeviceBinding()
+        await refreshCatalog()
+    }
+
+    func loginAccount(account: String, password: String) async throws {
+        let response = try await authClient.loginAccount(
+            account: account,
+            password: password,
+            deviceName: deviceProfile.deviceName
+        )
+        applyAuth(response)
+        await verifyDeviceBinding()
+        await refreshCatalog()
+    }
+
+    func restoreAuthSession() async {
+        guard authSession.isAuthenticated else { return }
+
+        do {
+            let response = try await authClient.fetchAuthMe()
+            applyAuth(response)
+            await verifyDeviceBinding()
+            await refreshCatalog()
+        } catch {
+            logoutLocally()
+            syncMessage = error.localizedDescription
+        }
+    }
+
+    func logoutAccount() async {
+        do {
+            try await authClient.logoutAccount()
+        } catch {
+            syncMessage = error.localizedDescription
+        }
+        logoutLocally()
+    }
+
     func updateDeviceToken(_ token: String) {
         deviceProfile.deviceToken = token
         deviceProfile.isBound = false
@@ -144,6 +327,60 @@ final class AppStore: ObservableObject {
             serverURL: deviceProfile.serverURL,
             deviceToken: deviceProfile.deviceToken
         )
+    }
+
+    private var authClient: BackendClient {
+        BackendClient(
+            serverURL: deviceProfile.serverURL,
+            authToken: authSession.authToken
+        )
+    }
+
+    private func applyAuth(_ response: AuthResponse) {
+        authSession = AuthSession(
+            authToken: response.authToken,
+            userId: response.user.id,
+            userName: response.user.name ?? "",
+            account: response.user.account,
+            phone: response.user.phone ?? "",
+            companyId: response.company.id,
+            companyName: response.company.name,
+            taxId: response.company.taxId,
+            address: response.company.address ?? "",
+            appKey: response.company.appKey
+        )
+
+        companyProfile = CompanyProfile(
+            memberName: response.user.name ?? "",
+            phone: response.user.phone ?? "",
+            email: response.user.account,
+            companyName: response.company.name,
+            taxId: response.company.taxId,
+            address: response.company.address ?? "",
+            appKey: response.company.appKey
+        )
+
+        deviceProfile.deviceToken = response.device.token
+        deviceProfile.deviceName = response.device.name
+        deviceProfile.isBound = true
+        deviceProfile.backendDeviceId = response.device.id
+        deviceProfile.companyName = response.company.name
+        deviceProfile.storeName = response.device.storeName
+        deviceProfile.lastVerifiedAt = Date()
+    }
+
+    private func logoutLocally() {
+        authSession = .empty
+        catalogCategories = []
+        catalogProducts = []
+        catalogPriceDecimalPlaces = 0
+        companyProfile = .initial
+        deviceProfile.deviceToken = ""
+        deviceProfile.isBound = false
+        deviceProfile.backendDeviceId = nil
+        deviceProfile.companyName = nil
+        deviceProfile.storeName = nil
+        deviceProfile.lastVerifiedAt = nil
     }
 
     private func updateJob(_ id: UUID, mutate: (inout PrintJob) -> Void) {

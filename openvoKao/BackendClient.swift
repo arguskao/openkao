@@ -2,19 +2,93 @@ import Foundation
 
 struct BackendClient {
     let serverURL: String
-    let deviceToken: String
+    let deviceToken: String?
+    let authToken: String?
+
+    init(serverURL: String, deviceToken: String? = nil, authToken: String? = nil) {
+        self.serverURL = serverURL
+        self.deviceToken = deviceToken
+        self.authToken = authToken
+    }
+
+    func registerAccount(
+        name: String,
+        phone: String,
+        account: String,
+        password: String,
+        companyName: String,
+        taxId: String,
+        address: String,
+        deviceName: String,
+        platform: String = "ios"
+    ) async throws -> AuthResponse {
+        try await request(
+            path: "/api/auth/register",
+            method: "POST",
+            authorization: .none,
+            body: AuthRegisterRequest(
+                name: name,
+                phone: phone,
+                account: account,
+                password: password,
+                companyName: companyName,
+                taxId: taxId,
+                address: address,
+                deviceName: deviceName,
+                platform: platform
+            )
+        )
+    }
+
+    func loginAccount(
+        account: String,
+        password: String,
+        deviceName: String,
+        platform: String = "ios"
+    ) async throws -> AuthResponse {
+        try await request(
+            path: "/api/auth/login",
+            method: "POST",
+            authorization: .none,
+            body: AuthLoginRequest(
+                account: account,
+                password: password,
+                deviceName: deviceName,
+                platform: platform
+            )
+        )
+    }
+
+    func fetchAuthMe() async throws -> AuthResponse {
+        try await request(
+            path: "/api/auth/me",
+            method: "GET",
+            authorization: .auth
+        )
+    }
+
+    func logoutAccount() async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/auth/logout",
+            method: "POST",
+            authorization: .auth,
+            body: EmptyRequest()
+        )
+    }
 
     func fetchDevice() async throws -> BackendDevice {
         try await request(
             path: "/api/devices/me",
-            method: "GET"
+            method: "GET",
+            authorization: .device
         )
     }
 
     func fetchPendingPrintJobs() async throws -> [PrintJob] {
         let response: PendingPrintJobsResponse = try await request(
             path: "/api/print-jobs/pending",
-            method: "GET"
+            method: "GET",
+            authorization: .device
         )
 
         return response.jobs.map { job in
@@ -26,6 +100,7 @@ struct BackendClient {
         let _: EmptyResponse = try await request(
             path: "/api/print-jobs/\(remoteId)/printed",
             method: "POST",
+            authorization: .device,
             body: EmptyRequest()
         )
     }
@@ -34,28 +109,143 @@ struct BackendClient {
         let _: EmptyResponse = try await request(
             path: "/api/print-jobs/\(remoteId)/failed",
             method: "POST",
+            authorization: .device,
             body: FailedRequest(message: message)
+        )
+    }
+
+    func fetchCatalogCategories() async throws -> [CatalogCategory] {
+        let response: CatalogCategoriesResponse = try await request(
+            path: "/api/catalog/categories",
+            method: "GET",
+            authorization: .device
+        )
+        return response.categories
+    }
+
+    func createCatalogCategory(name: String, sortOrder: Int, status: String) async throws -> CatalogCategory {
+        let response: CatalogCategoryResponse = try await request(
+            path: "/api/catalog/categories",
+            method: "POST",
+            authorization: .device,
+            body: CatalogCategoryUpsertRequest(name: name, sortOrder: sortOrder, status: status)
+        )
+        return response.category
+    }
+
+    func updateCatalogCategory(id: Int, name: String, sortOrder: Int, status: String) async throws -> CatalogCategory {
+        let response: CatalogCategoryResponse = try await request(
+            path: "/api/catalog/categories/\(id)",
+            method: "PUT",
+            authorization: .device,
+            body: CatalogCategoryUpsertRequest(name: name, sortOrder: sortOrder, status: status)
+        )
+        return response.category
+    }
+
+    func deleteCatalogCategory(id: Int) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/catalog/categories/\(id)",
+            method: "DELETE",
+            authorization: .device
+        )
+    }
+
+    func fetchCatalogProducts() async throws -> CatalogProductsResponse {
+        try await request(
+            path: "/api/catalog/products",
+            method: "GET",
+            authorization: .device
+        )
+    }
+
+    func createCatalogProduct(
+        categoryId: Int?,
+        name: String,
+        price: Int,
+        imagePath: String?,
+        status: String,
+        taxType: String,
+        sortOrder: Int
+    ) async throws -> CatalogProduct {
+        let response: CatalogProductResponse = try await request(
+            path: "/api/catalog/products",
+            method: "POST",
+            authorization: .device,
+            body: CatalogProductUpsertRequest(
+                categoryId: categoryId,
+                name: name,
+                price: price,
+                imagePath: imagePath,
+                status: status,
+                taxType: taxType,
+                sortOrder: sortOrder
+            )
+        )
+        return response.product
+    }
+
+    func updateCatalogProduct(
+        id: Int,
+        categoryId: Int?,
+        name: String,
+        price: Int,
+        imagePath: String?,
+        status: String,
+        taxType: String,
+        sortOrder: Int
+    ) async throws -> CatalogProduct {
+        let response: CatalogProductResponse = try await request(
+            path: "/api/catalog/products/\(id)",
+            method: "PUT",
+            authorization: .device,
+            body: CatalogProductUpsertRequest(
+                categoryId: categoryId,
+                name: name,
+                price: price,
+                imagePath: imagePath,
+                status: status,
+                taxType: taxType,
+                sortOrder: sortOrder
+            )
+        )
+        return response.product
+    }
+
+    func updateCatalogPriceSettings(priceDecimalPlaces: Int) async throws -> Int {
+        let response: CatalogSettingsResponse = try await request(
+            path: "/api/catalog/settings",
+            method: "PUT",
+            authorization: .device,
+            body: CatalogSettingsUpdateRequest(priceDecimalPlaces: priceDecimalPlaces)
+        )
+        return response.priceDecimalPlaces
+    }
+
+    func deleteCatalogProduct(id: Int) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/catalog/products/\(id)",
+            method: "DELETE",
+            authorization: .device
         )
     }
 
     private func request<ResponseBody: Decodable>(
         path: String,
-        method: String
+        method: String,
+        authorization: AuthorizationMode
     ) async throws -> ResponseBody {
-        try await request(path: path, method: method, body: Optional<EmptyRequest>.none)
+        try await request(path: path, method: method, authorization: authorization, body: Optional<EmptyRequest>.none)
     }
 
     private func request<RequestBody: Encodable, ResponseBody: Decodable>(
         path: String,
         method: String,
+        authorization: AuthorizationMode,
         body: RequestBody?
     ) async throws -> ResponseBody {
         guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BackendError.missingServerURL
-        }
-
-        guard !deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw BackendError.missingDeviceToken
         }
 
         guard let baseURL = URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -65,7 +255,20 @@ struct BackendClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("Bearer \(deviceToken.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        switch authorization {
+        case .none:
+            break
+        case .device:
+            guard let deviceToken, !deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw BackendError.missingDeviceToken
+            }
+            request.setValue("Bearer \(deviceToken.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        case .auth:
+            guard let authToken, !authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw BackendError.missingAuthToken
+            }
+            request.setValue("Bearer \(authToken.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
+        }
 
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -91,9 +294,9 @@ struct BackendDevice: Decodable {
     let id: String
     let name: String
     let platform: String
-    let companyId: String
+    let companyId: Int
     let companyName: String?
-    let storeId: String?
+    let storeId: Int?
     let storeName: String?
     let lastSeenAt: String?
     let isBound: Bool
@@ -102,6 +305,7 @@ struct BackendDevice: Decodable {
 enum BackendError: LocalizedError {
     case missingServerURL
     case missingDeviceToken
+    case missingAuthToken
     case invalidServerURL
     case invalidResponse
     case server(String)
@@ -112,6 +316,8 @@ enum BackendError: LocalizedError {
             return "請先設定伺服器 URL"
         case .missingDeviceToken:
             return "請先設定裝置 token"
+        case .missingAuthToken:
+            return "請先登入帳號"
         case .invalidServerURL:
             return "伺服器 URL 格式錯誤"
         case .invalidResponse:
@@ -182,10 +388,106 @@ private struct RemotePrintJobItem: Decodable {
     }
 }
 
+private enum AuthorizationMode {
+    case none
+    case device
+    case auth
+}
+
+struct AuthResponse: Decodable {
+    let authToken: String
+    let user: AuthUser
+    let company: AuthCompany
+    let device: AuthDevice
+}
+
+struct AuthUser: Decodable {
+    let id: Int
+    let name: String?
+    let account: String
+    let phone: String?
+}
+
+struct AuthCompany: Decodable {
+    let id: Int
+    let name: String
+    let taxId: String
+    let address: String?
+    let appKey: String
+}
+
+struct AuthDevice: Decodable {
+    let id: String
+    let token: String
+    let name: String
+    let storeId: Int?
+    let storeName: String?
+}
+
 private struct EmptyRequest: Encodable {}
 
 private struct FailedRequest: Encodable {
     let message: String
+}
+
+private struct AuthRegisterRequest: Encodable {
+    let name: String
+    let phone: String
+    let account: String
+    let password: String
+    let companyName: String
+    let taxId: String
+    let address: String
+    let deviceName: String
+    let platform: String
+}
+
+private struct AuthLoginRequest: Encodable {
+    let account: String
+    let password: String
+    let deviceName: String
+    let platform: String
+}
+
+private struct CatalogCategoriesResponse: Decodable {
+    let categories: [CatalogCategory]
+}
+
+private struct CatalogCategoryResponse: Decodable {
+    let category: CatalogCategory
+}
+
+private struct CatalogCategoryUpsertRequest: Encodable {
+    let name: String
+    let sortOrder: Int
+    let status: String
+}
+
+struct CatalogProductsResponse: Decodable {
+    let priceDecimalPlaces: Int
+    let products: [CatalogProduct]
+}
+
+private struct CatalogProductResponse: Decodable {
+    let product: CatalogProduct
+}
+
+private struct CatalogProductUpsertRequest: Encodable {
+    let categoryId: Int?
+    let name: String
+    let price: Int
+    let imagePath: String?
+    let status: String
+    let taxType: String
+    let sortOrder: Int
+}
+
+private struct CatalogSettingsUpdateRequest: Encodable {
+    let priceDecimalPlaces: Int
+}
+
+private struct CatalogSettingsResponse: Decodable {
+    let priceDecimalPlaces: Int
 }
 
 private struct EmptyResponse: Decodable {

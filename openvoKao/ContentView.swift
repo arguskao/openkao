@@ -4,42 +4,54 @@ import SafariServices
 struct ContentView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedTab: AppTab = .initial
+    @State private var didRestoreSession = false
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            PrintQueueView()
-                .tabItem {
-                    Label("待列印", systemImage: "list.bullet.rectangle")
-                }
-                .tag(AppTab.queue)
+        Group {
+            if store.isAuthenticated {
+                TabView(selection: $selectedTab) {
+                    PrintQueueView()
+                        .tabItem {
+                            Label("待列印", systemImage: "list.bullet.rectangle")
+                        }
+                        .tag(AppTab.queue)
 
-            PrinterSettingsView()
-                .tabItem {
-                    Label("印表機", systemImage: "printer")
-                }
-                .tag(AppTab.printer)
+                    PrinterSettingsView()
+                        .tabItem {
+                            Label("印表機", systemImage: "printer")
+                        }
+                        .tag(AppTab.printer)
 
-            BackendPortalView()
-                .tabItem {
-                    Label("後台", systemImage: "globe")
-                }
-                .tag(AppTab.backend)
+                    BackendPortalView()
+                        .tabItem {
+                            Label("後台", systemImage: "globe")
+                        }
+                        .tag(AppTab.backend)
 
-            PrintHistoryView()
-                .tabItem {
-                    Label("紀錄", systemImage: "clock")
-                }
-                .tag(AppTab.history)
+                    ProductCatalogView()
+                        .tabItem {
+                            Label("商品", systemImage: "shippingbox")
+                        }
+                        .tag(AppTab.history)
 
-            DeviceSettingsView {
-                selectedTab = .queue
+                    DeviceSettingsView {
+                        selectedTab = .queue
+                    }
+                        .tabItem {
+                            Label("設定", systemImage: "gearshape")
+                        }
+                        .tag(AppTab.settings)
+                }
+            } else {
+                AuthGatewayView()
             }
-                .tabItem {
-                    Label("設定", systemImage: "gearshape")
-                }
-                .tag(AppTab.settings)
         }
         .environmentObject(store)
+        .task {
+            guard !didRestoreSession else { return }
+            didRestoreSession = true
+            await store.restoreAuthSession()
+        }
     }
 }
 
@@ -265,7 +277,7 @@ struct PrintHistoryView: View {
         NavigationView {
             List {
                 if store.printedJobs.isEmpty {
-                    Text("尚無列印紀錄")
+                    Text("尚無商品")
                         .foregroundColor(.secondary)
                 }
 
@@ -273,7 +285,7 @@ struct PrintHistoryView: View {
                     PrintJobRow(job: job)
                 }
             }
-            .navigationTitle("列印紀錄")
+            .navigationTitle("商品")
         }
     }
 }
@@ -297,6 +309,33 @@ struct DeviceSettingsView: View {
 
                 ScrollView {
                     VStack(spacing: 24) {
+                        if store.isAuthenticated {
+                            MemberCard(
+                                title: "登入帳號",
+                                isEditing: false,
+                                showsEditButton: false,
+                                onEdit: {},
+                                fields: {
+                                    ReadOnlyMemberField(title: "公司", value: store.authSession.companyName)
+                                    ReadOnlyMemberField(title: "帳號", value: store.authSession.account)
+                                    ReadOnlyMemberField(title: "姓名", value: store.authSession.userName.isEmpty ? "未填寫" : store.authSession.userName)
+                                    if !store.authSession.phone.isEmpty {
+                                        ReadOnlyMemberField(title: "電話", value: store.authSession.phone)
+                                    }
+                                }
+                            )
+
+                            Button(role: .destructive) {
+                                Task {
+                                    await store.logoutAccount()
+                                }
+                            } label: {
+                                Label("登出", systemImage: "rectangle.portrait.and.arrow.right")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
                         MemberCard(
                             title: "會員資料",
                             isEditing: editingSection == .member,
@@ -315,10 +354,9 @@ struct DeviceSettingsView: View {
                                     keyboardType: .phonePad
                                 )
                                 FloatingTextField(
-                                    title: "電子郵件",
+                                    title: "帳號",
                                     text: $draftProfile.email,
                                     isEnabled: editingSection == .member,
-                                    keyboardType: .emailAddress,
                                     autocorrectionDisabled: true
                                 )
                             }
@@ -402,7 +440,7 @@ struct DeviceSettingsView: View {
         guard !trimmedMemberName.isEmpty,
               !trimmedPhone.isEmpty,
               !trimmedEmail.isEmpty else {
-            alert = AppAlert(title: "資料未完成", message: "請填寫會員名稱、手機號碼和電子郵件")
+            alert = AppAlert(title: "資料未完成", message: "請填寫會員名稱、手機號碼和帳號")
             return
         }
 
@@ -466,6 +504,7 @@ private struct MemberCenterHeader: View {
 private struct MemberCard<Fields: View>: View {
     let title: String
     let isEditing: Bool
+    var showsEditButton = true
     let onEdit: () -> Void
     @ViewBuilder let fields: Fields
 
@@ -480,15 +519,17 @@ private struct MemberCard<Fields: View>: View {
 
                 Spacer()
 
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(isEditing ? .blue : .black)
-                        .frame(width: 48, height: 48)
-                        .background(Color.black.opacity(0.06))
-                        .clipShape(Circle())
+                if showsEditButton {
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundColor(isEditing ? .blue : .black)
+                            .frame(width: 48, height: 48)
+                            .background(Color.black.opacity(0.06))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
 
             fields
@@ -539,6 +580,31 @@ private struct FloatingTextField: View {
                 .offset(x: 18, y: -10)
         }
         .padding(.top, 12)
+    }
+}
+
+private struct ReadOnlyMemberField: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundColor(Color.memberLabel)
+
+            Text(value)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 13)
+                .background(Color.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Color.memberFieldBorder, lineWidth: 2)
+                )
+        }
     }
 }
 
