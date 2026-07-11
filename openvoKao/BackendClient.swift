@@ -4,11 +4,18 @@ struct BackendClient {
     let serverURL: String
     let deviceToken: String?
     let authToken: String?
+    let urlSession: BackendURLSession
 
-    init(serverURL: String, deviceToken: String? = nil, authToken: String? = nil) {
+    init(
+        serverURL: String,
+        deviceToken: String? = nil,
+        authToken: String? = nil,
+        urlSession: BackendURLSession = URLSession.shared
+    ) {
         self.serverURL = serverURL
         self.deviceToken = deviceToken
         self.authToken = authToken
+        self.urlSession = urlSession
     }
 
     func registerAccount(
@@ -20,6 +27,7 @@ struct BackendClient {
         taxId: String,
         address: String,
         deviceName: String,
+        installationId: String,
         platform: String = "ios"
     ) async throws -> AuthResponse {
         try await request(
@@ -35,6 +43,7 @@ struct BackendClient {
                 taxId: taxId,
                 address: address,
                 deviceName: deviceName,
+                installationId: installationId,
                 platform: platform
             )
         )
@@ -44,6 +53,8 @@ struct BackendClient {
         account: String,
         password: String,
         deviceName: String,
+        installationId: String,
+        unbindCode: String? = nil,
         platform: String = "ios"
     ) async throws -> AuthResponse {
         try await request(
@@ -54,6 +65,8 @@ struct BackendClient {
                 account: account,
                 password: password,
                 deviceName: deviceName,
+                installationId: installationId,
+                unbindCode: unbindCode,
                 platform: platform
             )
         )
@@ -91,9 +104,7 @@ struct BackendClient {
             authorization: .device
         )
 
-        return response.jobs.map { job in
-            job.payload.printJob(remoteId: job.id)
-        }
+        return response.jobs.map { $0.printJob() }
     }
 
     func reportPrinted(remoteId: String) async throws {
@@ -118,7 +129,7 @@ struct BackendClient {
         let response: CatalogCategoriesResponse = try await request(
             path: "/api/catalog/categories",
             method: "GET",
-            authorization: .device
+            authorization: .auth
         )
         return response.categories
     }
@@ -127,7 +138,7 @@ struct BackendClient {
         let response: CatalogCategoryResponse = try await request(
             path: "/api/catalog/categories",
             method: "POST",
-            authorization: .device,
+            authorization: .auth,
             body: CatalogCategoryUpsertRequest(name: name, sortOrder: sortOrder, status: status)
         )
         return response.category
@@ -137,7 +148,7 @@ struct BackendClient {
         let response: CatalogCategoryResponse = try await request(
             path: "/api/catalog/categories/\(id)",
             method: "PUT",
-            authorization: .device,
+            authorization: .auth,
             body: CatalogCategoryUpsertRequest(name: name, sortOrder: sortOrder, status: status)
         )
         return response.category
@@ -147,7 +158,7 @@ struct BackendClient {
         let _: EmptyResponse = try await request(
             path: "/api/catalog/categories/\(id)",
             method: "DELETE",
-            authorization: .device
+            authorization: .auth
         )
     }
 
@@ -155,7 +166,7 @@ struct BackendClient {
         try await request(
             path: "/api/catalog/products",
             method: "GET",
-            authorization: .device
+            authorization: .auth
         )
     }
 
@@ -171,7 +182,7 @@ struct BackendClient {
         let response: CatalogProductResponse = try await request(
             path: "/api/catalog/products",
             method: "POST",
-            authorization: .device,
+            authorization: .auth,
             body: CatalogProductUpsertRequest(
                 categoryId: categoryId,
                 name: name,
@@ -198,7 +209,7 @@ struct BackendClient {
         let response: CatalogProductResponse = try await request(
             path: "/api/catalog/products/\(id)",
             method: "PUT",
-            authorization: .device,
+            authorization: .auth,
             body: CatalogProductUpsertRequest(
                 categoryId: categoryId,
                 name: name,
@@ -216,7 +227,7 @@ struct BackendClient {
         let response: CatalogSettingsResponse = try await request(
             path: "/api/catalog/settings",
             method: "PUT",
-            authorization: .device,
+            authorization: .auth,
             body: CatalogSettingsUpdateRequest(priceDecimalPlaces: priceDecimalPlaces)
         )
         return response.priceDecimalPlaces
@@ -226,18 +237,23 @@ struct BackendClient {
         let _: EmptyResponse = try await request(
             path: "/api/catalog/products/\(id)",
             method: "DELETE",
-            authorization: .device
+            authorization: .auth
         )
     }
 
-    func fetchSalesInvoices(startDate: Date, endDate: Date) async throws -> [SalesInvoice] {
+    func fetchSalesReport(startDate: Date, endDate: Date, cursor: String? = nil) async throws -> SalesReportPayload {
         let formatter = DateFormatter.reportQuery
-        let response: SalesInvoicesResponse = try await request(
-            path: "/api/reports/sales?startDate=\(formatter.string(from: startDate))&endDate=\(formatter.string(from: endDate))",
+        var path = "/api/reports/sales?startDate=\(formatter.string(from: startDate))&endDate=\(formatter.string(from: endDate))"
+        if let cursor, !cursor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let encoded = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? cursor
+            path += "&cursor=\(encoded)"
+        }
+        let response: SalesReportPayload = try await request(
+            path: path,
             method: "GET",
             authorization: .auth
         )
-        return response.invoices
+        return response
     }
 
     private func request<ResponseBody: Decodable>(
@@ -285,7 +301,7 @@ struct BackendClient {
             request.httpBody = try JSONEncoder.backend.encode(body)
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await urlSession.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw BackendError.invalidResponse
@@ -293,12 +309,18 @@ struct BackendClient {
 
         guard (200..<300).contains(httpResponse.statusCode) else {
             let error = try? JSONDecoder.backend.decode(ErrorResponse.self, from: data)
-            throw BackendError.server(error?.error ?? "HTTP \(httpResponse.statusCode)")
+            throw BackendError.server(statusCode: httpResponse.statusCode, message: error?.error ?? "HTTP \(httpResponse.statusCode)")
         }
 
         return try JSONDecoder.backend.decode(ResponseBody.self, from: data)
     }
 }
+
+protocol BackendURLSession {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: BackendURLSession {}
 
 struct BackendDevice: Decodable {
     let id: String
@@ -316,7 +338,18 @@ enum BackendError: LocalizedError {
     case missingAuthToken
     case invalidServerURL
     case invalidResponse
-    case server(String)
+    case server(statusCode: Int, message: String)
+
+    var isAuthenticationFailure: Bool {
+        switch self {
+        case .missingAuthToken:
+            return true
+        case .server(let statusCode, _):
+            return statusCode == 401 || statusCode == 403
+        default:
+            return false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -330,7 +363,7 @@ enum BackendError: LocalizedError {
             return "伺服器 URL 格式錯誤"
         case .invalidResponse:
             return "後台回應格式錯誤"
-        case .server(let message):
+        case .server(_, let message):
             return "後台錯誤：\(message)"
         }
     }
@@ -345,6 +378,10 @@ private struct RemotePrintJob: Decodable {
     let status: String
     let createdAt: String
     let payload: RemotePrintJobPayload
+
+    func printJob() -> PrintJob {
+        payload.printJob(remoteId: id, status: status)
+    }
 }
 
 private struct RemotePrintJobPayload: Decodable {
@@ -360,7 +397,7 @@ private struct RemotePrintJobPayload: Decodable {
     let qrCodePayload: String?
     let barcodePayload: String?
 
-    func printJob(remoteId: String) -> PrintJob {
+    func printJob(remoteId: String, status: String) -> PrintJob {
         PrintJob(
             id: UUID(),
             remoteId: remoteId,
@@ -374,7 +411,7 @@ private struct RemotePrintJobPayload: Decodable {
             items: items.map { $0.printJobItem() },
             qrCodePayload: qrCodePayload,
             barcodePayload: barcodePayload,
-            status: .pending,
+            status: status == "printing" ? .printing : .pending,
             lastMessage: nil
         )
     }
@@ -414,6 +451,7 @@ struct AuthUser: Decodable {
     let name: String?
     let account: String
     let phone: String?
+    let role: String
 }
 
 struct AuthCompany: Decodable {
@@ -421,12 +459,12 @@ struct AuthCompany: Decodable {
     let name: String
     let taxId: String
     let address: String?
-    let appKey: String
+    let hasAppKeyConfigured: Bool
 }
 
 struct AuthDevice: Decodable {
     let id: String
-    let token: String
+    let token: String?
     let name: String
 }
 
@@ -445,6 +483,7 @@ private struct AuthRegisterRequest: Encodable {
     let taxId: String
     let address: String
     let deviceName: String
+    let installationId: String
     let platform: String
 }
 
@@ -452,6 +491,8 @@ private struct AuthLoginRequest: Encodable {
     let account: String
     let password: String
     let deviceName: String
+    let installationId: String
+    let unbindCode: String?
     let platform: String
 }
 
@@ -494,10 +535,6 @@ private struct CatalogSettingsUpdateRequest: Encodable {
 
 private struct CatalogSettingsResponse: Decodable {
     let priceDecimalPlaces: Int
-}
-
-private struct SalesInvoicesResponse: Decodable {
-    let invoices: [SalesInvoice]
 }
 
 private struct EmptyResponse: Decodable {

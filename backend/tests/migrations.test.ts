@@ -1,0 +1,155 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import type { Database } from "sql.js";
+import { applyMigrations, createSqlD1 } from "./helpers/sql-d1";
+
+test("D1 migrations apply to an empty database", async () => {
+  const d1 = await createSqlD1();
+
+  applyMigrations(d1.rawDatabase);
+
+  assert.equal(tableExists(d1.rawDatabase, "companies"), true);
+  assert.equal(tableExists(d1.rawDatabase, "stores"), false);
+  assert.equal(tableExists(d1.rawDatabase, "audit_logs"), true);
+  assert.equal(tableExists(d1.rawDatabase, "request_rate_limits"), true);
+  assert.equal(foreignKeyIssueCount(d1.rawDatabase), 0);
+  assert.equal(rowCount(d1.rawDatabase, "companies"), 0);
+  assert.equal(rowCount(d1.rawDatabase, "print_jobs"), 0);
+});
+
+test("D1 old schema upgrade keeps row counts, foreign keys, and key queries valid", async () => {
+  const d1 = await createSqlD1();
+  const db = d1.rawDatabase;
+
+  applyOnlyInitialMigration(db);
+  insertOldSchemaFixture(db);
+
+  assert.equal(rowCount(db, "companies"), 1);
+  assert.equal(rowCount(db, "stores"), 1);
+  assert.equal(rowCount(db, "products"), 1);
+
+  applyMigrations(db, 1);
+
+  assert.equal(tableExists(db, "stores"), false);
+  assert.equal(rowCount(db, "companies"), 1);
+  assert.equal(rowCount(db, "devices"), 1);
+  assert.equal(rowCount(db, "categories"), 1);
+  assert.equal(rowCount(db, "products"), 1);
+  assert.equal(rowCount(db, "invoices"), 1);
+  assert.equal(rowCount(db, "invoice_items"), 1);
+  assert.equal(rowCount(db, "print_jobs"), 1);
+  assert.equal(rowCount(db, "print_logs"), 1);
+  assert.equal(foreignKeyIssueCount(db), 0);
+
+  const product = firstRow<{ company_id: number; category_id: number; price_decimal_places: number }>(
+    db,
+    `SELECT p.company_id, p.category_id, c.price_decimal_places
+     FROM products p
+     JOIN companies c ON c.id = p.company_id
+     JOIN categories cat ON cat.id = p.category_id`
+  );
+  assert.deepEqual(product, { company_id: 1, category_id: 1, price_decimal_places: 0 });
+
+  const printJob = firstRow<{ status: string; invoice_number: string; device_name: string }>(
+    db,
+    `SELECT p.status, i.invoice_number, d.name AS device_name
+     FROM print_jobs p
+     JOIN invoices i ON i.id = p.invoice_id
+     JOIN devices d ON d.id = p.device_id`
+  );
+  assert.deepEqual(printJob, {
+    status: "pending",
+    invoice_number: "AB12345678",
+    device_name: "Front iPhone"
+  });
+});
+
+function applyOnlyInitialMigration(db: Database): void {
+  db.exec(fs.readFileSync(path.resolve(process.cwd(), "migrations/0001_initial.sql"), "utf8"));
+}
+
+function insertOldSchemaFixture(db: Database): void {
+  db.run(`
+    INSERT INTO users (id, email, password_hash, name, created_at, updated_at)
+    VALUES ('user-old', 'owner@example.test', 'hash', 'Owner', '2026-07-09 10:00:00', '2026-07-09 10:00:00');
+
+    INSERT INTO companies (id, name, tax_id, amego_invoice_no, amego_app_key_secret_name, created_at, updated_at)
+    VALUES ('company-old', 'Old Company', '12345678', 'AB', 'AMEGO_APP_KEY_PENDING', '2026-07-09 10:00:00', '2026-07-09 10:00:00');
+
+    INSERT INTO stores (id, company_id, name, address, created_at, updated_at)
+    VALUES ('store-old', 'company-old', 'Main Store', 'Taipei', '2026-07-09 10:01:00', '2026-07-09 10:01:00');
+
+    INSERT INTO devices (id, company_id, store_id, name, token, platform, last_seen_at, created_at, updated_at)
+    VALUES ('device-old', 'company-old', 'store-old', 'Front iPhone', 'legacy-token', 'ios', NULL, '2026-07-09 10:02:00', '2026-07-09 10:02:00');
+
+    INSERT INTO categories (id, company_id, name, sort_order, created_at, updated_at)
+    VALUES ('category-old', 'company-old', '飲品', 0, '2026-07-09 10:03:00', '2026-07-09 10:03:00');
+
+    INSERT INTO products (id, company_id, category_id, name, price, is_active, created_at, updated_at)
+    VALUES ('product-old', 'company-old', 'category-old', '奶茶', 45, 1, '2026-07-09 10:04:00', '2026-07-09 10:04:00');
+
+    INSERT INTO invoices (
+      id, company_id, store_id, invoice_number, random_number, issued_at,
+      seller_name, seller_identifier, buyer_identifier, total_amount,
+      amego_response_json, created_at, updated_at
+    )
+    VALUES (
+      'invoice-old', 'company-old', 'store-old', 'AB12345678', '1234', '2026-07-09T13:59:00Z',
+      'Old Company', '12345678', NULL, 45,
+      NULL, '2026-07-09 10:05:00', '2026-07-09 10:05:00'
+    );
+
+    INSERT INTO invoice_items (id, invoice_id, name, quantity, unit_price, amount)
+    VALUES ('item-old', 'invoice-old', '奶茶', 1, 45, 45);
+
+    INSERT INTO print_jobs (
+      id, company_id, store_id, device_id, invoice_id, status, payload_json,
+      last_error, printed_at, created_at, updated_at
+    )
+    VALUES (
+      'job-old', 'company-old', 'store-old', 'device-old', 'invoice-old', 'pending',
+      '{"remoteId":"job-old","invoiceNumber":"AB12345678","randomNumber":"1234","issuedAt":"2026-07-09T13:59:00Z","sellerIdentifier":"12345678","totalAmount":45,"items":[{"id":"item-old","name":"奶茶","quantity":1,"unitPrice":45}]}',
+      NULL, NULL, '2026-07-09 10:06:00', '2026-07-09 10:06:00'
+    );
+
+    INSERT INTO print_logs (id, print_job_id, device_id, status, message, created_at)
+    VALUES ('log-old', 'job-old', 'device-old', 'pending', NULL, '2026-07-09 10:07:00');
+  `);
+}
+
+function tableExists(db: Database, tableName: string): boolean {
+  return scalar<number>(
+    db,
+    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [tableName]
+  ) === 1;
+}
+
+function rowCount(db: Database, tableName: string): number {
+  return scalar<number>(db, `SELECT COUNT(*) FROM ${tableName}`);
+}
+
+function foreignKeyIssueCount(db: Database): number {
+  const result = db.exec("PRAGMA foreign_key_check");
+  return result[0]?.values.length ?? 0;
+}
+
+function firstRow<T>(db: Database, sql: string): T {
+  const result = db.exec(sql);
+  const columns = result[0]?.columns ?? [];
+  const values = result[0]?.values[0] ?? [];
+  return Object.fromEntries(columns.map((column, index) => [column, values[index]])) as T;
+}
+
+function scalar<T>(db: Database, sql: string, params: unknown[] = []): T {
+  const statement = db.prepare(sql);
+  try {
+    statement.bind(params as never[]);
+    assert.equal(statement.step(), true);
+    return statement.get()[0] as T;
+  } finally {
+    statement.free();
+  }
+}

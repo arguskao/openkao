@@ -7,10 +7,16 @@
 	objects = {
 
 /* Begin PBXFileReference section */
+		CE12A0013000000000000001 /* openvoKaoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = openvoKaoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE2AA1EE2FFF7FCF0071815B /* openvoKao.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = openvoKao.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		CE12A0023000000000000001 /* openvoKaoTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = openvoKaoTests;
+			sourceTree = "<group>";
+		};
 		CE2AA1F02FFF7FCF0071815B /* openvoKao */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = openvoKao;
@@ -19,6 +25,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		CE12A0043000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CE2AA1EB2FFF7FCF0071815B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -33,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				CE2AA1F02FFF7FCF0071815B /* openvoKao */,
+				CE12A0023000000000000001 /* openvoKaoTests */,
 				CE2AA1EF2FFF7FCF0071815B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				CE2AA1EE2FFF7FCF0071815B /* openvoKao.app */,
+				CE12A0013000000000000001 /* openvoKaoTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,6 +63,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		CE12A0063000000000000001 /* openvoKaoTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CE12A00B3000000000000001 /* Build configuration list for PBXNativeTarget "openvoKaoTests" */;
+			buildPhases = (
+				CE12A0033000000000000001 /* Sources */,
+				CE12A0043000000000000001 /* Frameworks */,
+				CE12A0053000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CE12A0073000000000000001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				CE12A0023000000000000001 /* openvoKaoTests */,
+			);
+			name = openvoKaoTests;
+			packageProductDependencies = (
+			);
+			productName = openvoKaoTests;
+			productReference = CE12A0013000000000000001 /* openvoKaoTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		CE2AA1ED2FFF7FCF0071815B /* openvoKao */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = CE2AA1F92FFF7FD20071815B /* Build configuration list for PBXNativeTarget "openvoKao" */;
@@ -80,6 +118,10 @@
 				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
+					CE12A0063000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = CE2AA1ED2FFF7FCF0071815B;
+					};
 					CE2AA1ED2FFF7FCF0071815B = {
 						CreatedOnToolsVersion = 26.6;
 					};
@@ -100,11 +142,19 @@
 			projectRoot = "";
 			targets = (
 				CE2AA1ED2FFF7FCF0071815B /* openvoKao */,
+				CE12A0063000000000000001 /* openvoKaoTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		CE12A0053000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CE2AA1EC2FFF7FCF0071815B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -115,6 +165,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		CE12A0033000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CE2AA1EA2FFF7FCF0071815B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -124,7 +181,73 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		CE12A0073000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CE2AA1ED2FFF7FCF0071815B /* openvoKao */;
+			targetProxy = CE12A0083000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		CE12A0083000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = CE2AA1E62FFF7FCF0071815B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CE2AA1ED2FFF7FCF0071815B;
+			remoteInfo = openvoKao;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin XCBuildConfiguration section */
+		CE12A0093000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6T25FRDJW3;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kaochifeng.openvoKaoTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/openvoKao.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/openvoKao";
+			};
+			name = Debug;
+		};
+		CE12A00A3000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6T25FRDJW3;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kaochifeng.openvoKaoTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/openvoKao.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/openvoKao";
+			};
+			name = Release;
+		};
 		CE2AA1F72FFF7FD20071815B /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -317,6 +440,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		CE12A00B3000000000000001 /* Build configuration list for PBXNativeTarget "openvoKaoTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CE12A0093000000000000001 /* Debug */,
+				CE12A00A3000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		CE2AA1E92FFF7FCF0071815B /* Build configuration list for PBXProject "openvoKao" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

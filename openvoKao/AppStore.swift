@@ -3,6 +3,9 @@ import Foundation
 
 @MainActor
 final class AppStore: ObservableObject {
+    private static let authTokenKeychainKey = "authToken"
+    private static let deviceTokenKeychainKey = "deviceToken"
+
     @Published var printJobs: [PrintJob] {
         didSet { save(printJobs, key: printJobsKey) }
     }
@@ -31,6 +34,10 @@ final class AppStore: ObservableObject {
         didSet { save(catalogPriceDecimalPlaces, key: catalogPriceDecimalPlacesKey) }
     }
 
+    @Published private(set) var printReportOutbox: [PrintReportOutboxItem] {
+        didSet { save(printReportOutbox, key: printReportOutboxKey) }
+    }
+
     @Published private(set) var isSyncing = false
     @Published private(set) var syncMessage: String?
 
@@ -41,15 +48,40 @@ final class AppStore: ObservableObject {
     private let catalogCategoriesKey = "catalogCategories"
     private let catalogProductsKey = "catalogProducts"
     private let catalogPriceDecimalPlacesKey = "catalogPriceDecimalPlaces"
+    private let printReportOutboxKey = "printReportOutbox"
+    private let maxStoredPrintJobs = 300
+    private let maxStoredPrintJobAgeDays = 30
 
     init() {
-        printJobs = Self.load([PrintJob].self, key: printJobsKey) ?? Self.samplePrintJobs
-        deviceProfile = Self.load(DeviceProfile.self, key: deviceProfileKey) ?? .initial
+        let persistedJobs = Self.load([PrintJob].self, key: printJobsKey) ?? []
+        let loadedOutbox = Self.load([PrintReportOutboxItem].self, key: printReportOutboxKey) ?? []
+        printReportOutbox = loadedOutbox
+        printJobs = persistedJobs.filter { !$0.remoteId.hasPrefix("demo-") }
+        var loadedDeviceProfile = Self.load(DeviceProfile.self, key: deviceProfileKey) ?? .initial
         companyProfile = Self.load(CompanyProfile.self, key: companyProfileKey) ?? .initial
-        authSession = Self.load(AuthSession.self, key: authSessionKey) ?? .empty
+        var loadedAuthSession = Self.load(AuthSession.self, key: authSessionKey) ?? .empty
         catalogCategories = Self.load([CatalogCategory].self, key: catalogCategoriesKey) ?? []
         catalogProducts = Self.load([CatalogProduct].self, key: catalogProductsKey) ?? []
         catalogPriceDecimalPlaces = Self.load(Int.self, key: catalogPriceDecimalPlacesKey) ?? 0
+
+        loadedDeviceProfile.deviceToken = Self.migrateSensitiveValue(
+            legacyValue: loadedDeviceProfile.deviceToken,
+            keychainKey: Self.deviceTokenKeychainKey
+        )
+        if loadedDeviceProfile.installationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            loadedDeviceProfile.installationId = UUID().uuidString
+        }
+        deviceProfile = loadedDeviceProfile
+
+        loadedAuthSession.authToken = Self.migrateSensitiveValue(
+            legacyValue: loadedAuthSession.authToken,
+            keychainKey: Self.authTokenKeychainKey
+        )
+        authSession = loadedAuthSession
+
+        save(deviceProfile, key: deviceProfileKey)
+        save(authSession, key: authSessionKey)
+        printJobs = prunePrintJobs(printJobs)
     }
 
     var isAuthenticated: Bool {
@@ -65,14 +97,20 @@ final class AppStore: ObservableObject {
     }
 
     func markPrinted(_ job: PrintJob) {
-        updateJob(job.id) { current in
+        updateJob(job) { current in
             current.status = .printed
-            current.lastMessage = "已送出列印"
+            current.lastMessage = "已送至印表機，請確認是否完成出紙"
+        }
+    }
+
+    func markSending(_ job: PrintJob) {
+        updateJob(job) { current in
+            current.lastMessage = "資料傳送中，尚未完成"
         }
     }
 
     func markFailed(_ job: PrintJob, message: String) {
-        updateJob(job.id) { current in
+        updateJob(job) { current in
             current.status = .failed
             current.lastMessage = message
         }
@@ -84,11 +122,12 @@ final class AppStore: ObservableObject {
         defer { isSyncing = false }
 
         do {
+            await flushPrintReportOutbox()
             let jobs = try await backendClient.fetchPendingPrintJobs()
-            let history = printJobs.filter { $0.status != .pending }
-            printJobs = history + jobs
+            mergeFetchedPrintJobs(jobs)
             deviceProfile.isBound = true
-            syncMessage = "已同步 \(jobs.count) 筆待列印"
+            let outboxSuffix = printReportOutbox.isEmpty ? "" : "，\(printReportOutbox.count) 筆回報待重試"
+            syncMessage = "已同步 \(jobs.count) 筆待列印\(outboxSuffix)"
         } catch {
             syncMessage = error.localizedDescription
         }
@@ -218,9 +257,11 @@ final class AppStore: ObservableObject {
 
         do {
             try await backendClient.reportPrinted(remoteId: job.remoteId)
-            syncMessage = "已回報列印成功：\(job.invoiceNumber)"
+            removePrintReportOutboxItem(remoteId: job.remoteId, status: .printed)
+            syncMessage = "已回報送印完成：\(job.invoiceNumber)"
         } catch {
-            updateJob(job.id) { current in
+            enqueuePrintReport(remoteId: job.remoteId, status: .printed, message: nil, lastError: error.localizedDescription)
+            updateJob(job) { current in
                 current.lastMessage = "本機已列印，回報失敗：\(error.localizedDescription)"
             }
             syncMessage = error.localizedDescription
@@ -232,17 +273,15 @@ final class AppStore: ObservableObject {
 
         do {
             try await backendClient.reportFailed(remoteId: job.remoteId, message: message)
+            removePrintReportOutboxItem(remoteId: job.remoteId, status: .failed)
             syncMessage = "已回報列印失敗：\(job.invoiceNumber)"
         } catch {
-            updateJob(job.id) { current in
+            enqueuePrintReport(remoteId: job.remoteId, status: .failed, message: message, lastError: error.localizedDescription)
+            updateJob(job) { current in
                 current.lastMessage = "列印失敗，回報也失敗：\(error.localizedDescription)"
             }
             syncMessage = error.localizedDescription
         }
-    }
-
-    func resetSampleJobs() {
-        printJobs = Self.samplePrintJobs
     }
 
     func updateCompanyProfile(_ profile: CompanyProfile) {
@@ -270,18 +309,21 @@ final class AppStore: ObservableObject {
             companyName: companyName,
             taxId: taxId,
             address: address,
-            deviceName: deviceProfile.deviceName
+            deviceName: deviceProfile.deviceName,
+            installationId: deviceProfile.installationId
         )
         applyAuth(response)
         await verifyDeviceBinding()
         await refreshCatalog()
     }
 
-    func loginAccount(account: String, password: String) async throws {
+    func loginAccount(account: String, password: String, unbindCode: String? = nil) async throws {
         let response = try await authClient.loginAccount(
             account: account,
             password: password,
-            deviceName: deviceProfile.deviceName
+            deviceName: deviceProfile.deviceName,
+            installationId: deviceProfile.installationId,
+            unbindCode: unbindCode
         )
         applyAuth(response)
         await verifyDeviceBinding()
@@ -296,8 +338,11 @@ final class AppStore: ObservableObject {
             applyAuth(response)
             await verifyDeviceBinding()
             await refreshCatalog()
+            await refreshPendingJobs()
         } catch {
-            logoutLocally()
+            if (error as? BackendError)?.isAuthenticationFailure == true {
+                logoutLocally()
+            }
             syncMessage = error.localizedDescription
         }
     }
@@ -317,10 +362,11 @@ final class AppStore: ObservableObject {
         deviceProfile.backendDeviceId = nil
         deviceProfile.companyName = nil
         deviceProfile.lastVerifiedAt = nil
+        _ = KeychainStore.set(token.trimmingCharacters(in: .whitespacesAndNewlines), for: Self.deviceTokenKeychainKey)
     }
 
-    func fetchSalesInvoices(startDate: Date, endDate: Date) async throws -> [SalesInvoice] {
-        try await authClient.fetchSalesInvoices(startDate: startDate, endDate: endDate)
+    func fetchSalesReport(startDate: Date, endDate: Date, cursor: String? = nil) async throws -> SalesReportPayload {
+        try await authClient.fetchSalesReport(startDate: startDate, endDate: endDate, cursor: cursor)
     }
 
     private var backendClient: BackendClient {
@@ -344,11 +390,11 @@ final class AppStore: ObservableObject {
             userName: response.user.name ?? "",
             account: response.user.account,
             phone: response.user.phone ?? "",
+            role: response.user.role,
             companyId: response.company.id,
             companyName: response.company.name,
             taxId: response.company.taxId,
-            address: response.company.address ?? "",
-            appKey: response.company.appKey
+            address: response.company.address ?? ""
         )
 
         companyProfile = CompanyProfile(
@@ -358,15 +404,19 @@ final class AppStore: ObservableObject {
             companyName: response.company.name,
             taxId: response.company.taxId,
             address: response.company.address ?? "",
-            appKey: response.company.appKey
+            hasAppKeyConfigured: response.company.hasAppKeyConfigured
         )
 
-        deviceProfile.deviceToken = response.device.token
+        if let token = response.device.token?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            deviceProfile.deviceToken = token
+        }
         deviceProfile.deviceName = response.device.name
         deviceProfile.isBound = true
         deviceProfile.backendDeviceId = response.device.id
         deviceProfile.companyName = response.company.name
         deviceProfile.lastVerifiedAt = Date()
+        persistSensitiveTokens()
     }
 
     private func logoutLocally() {
@@ -374,17 +424,138 @@ final class AppStore: ObservableObject {
         catalogCategories = []
         catalogProducts = []
         catalogPriceDecimalPlaces = 0
+        printReportOutbox = []
         companyProfile = .initial
         deviceProfile.deviceToken = ""
         deviceProfile.isBound = false
         deviceProfile.backendDeviceId = nil
         deviceProfile.companyName = nil
         deviceProfile.lastVerifiedAt = nil
+        KeychainStore.remove(Self.authTokenKeychainKey)
+        KeychainStore.remove(Self.deviceTokenKeychainKey)
     }
 
-    private func updateJob(_ id: UUID, mutate: (inout PrintJob) -> Void) {
-        guard let index = printJobs.firstIndex(where: { $0.id == id }) else { return }
+    private func updateJob(_ job: PrintJob, mutate: (inout PrintJob) -> Void) {
+        guard let index = printJobs.firstIndex(where: { $0.remoteId == job.remoteId || $0.id == job.id }) else { return }
         mutate(&printJobs[index])
+    }
+
+    private func mergeFetchedPrintJobs(_ fetchedJobs: [PrintJob]) {
+        var mergedByRemoteId: [String: PrintJob] = [:]
+        for job in printJobs {
+            guard !job.remoteId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            mergedByRemoteId[job.remoteId] = job
+        }
+
+        for fetched in fetchedJobs {
+            if let existing = mergedByRemoteId[fetched.remoteId] {
+                var next = fetched
+                next.id = existing.id
+                if shouldKeepLocalJobState(existing) {
+                    next.status = existing.status
+                    next.lastMessage = existing.lastMessage
+                }
+                mergedByRemoteId[fetched.remoteId] = next
+            } else {
+                mergedByRemoteId[fetched.remoteId] = fetched
+            }
+        }
+
+        let ordered = mergedByRemoteId.values.sorted {
+            if $0.status == $1.status {
+                return $0.issuedAt > $1.issuedAt
+            }
+            return statusSortRank($0.status) < statusSortRank($1.status)
+        }
+        printJobs = prunePrintJobs(ordered)
+    }
+
+    private func shouldKeepLocalJobState(_ job: PrintJob) -> Bool {
+        job.status == .printed
+            || job.status == .failed
+            || printReportOutbox.contains { $0.remoteId == job.remoteId }
+    }
+
+    private func statusSortRank(_ status: PrintJobStatus) -> Int {
+        switch status {
+        case .pending, .printing:
+            return 0
+        case .failed:
+            return 1
+        case .printed:
+            return 2
+        }
+    }
+
+    private func prunePrintJobs(_ jobs: [PrintJob]) -> [PrintJob] {
+        let protectedRemoteIds = Set(printReportOutbox.map(\.remoteId))
+        let cutoff = Calendar.current.date(byAdding: .day, value: -maxStoredPrintJobAgeDays, to: Date()) ?? .distantPast
+        let candidates = jobs.filter { job in
+            !job.remoteId.hasPrefix("demo-")
+                && (job.status == .pending
+                    || job.status == .printing
+                    || protectedRemoteIds.contains(job.remoteId)
+                    || job.issuedAt >= cutoff)
+        }
+
+        var seenRemoteIds = Set<String>()
+        let deduped = candidates.sorted { $0.issuedAt > $1.issuedAt }.filter { job in
+            guard !seenRemoteIds.contains(job.remoteId) else { return false }
+            seenRemoteIds.insert(job.remoteId)
+            return true
+        }
+
+        let protectedJobs = deduped.filter {
+            $0.status == .pending || $0.status == .printing || protectedRemoteIds.contains($0.remoteId)
+        }
+        let historicalJobs = deduped.filter { job in
+            !protectedJobs.contains { $0.remoteId == job.remoteId }
+        }
+        return Array((protectedJobs + historicalJobs).prefix(maxStoredPrintJobs))
+    }
+
+    private func enqueuePrintReport(
+        remoteId: String,
+        status: PrintReportOutboxStatus,
+        message: String?,
+        lastError: String?
+    ) {
+        let next = PrintReportOutboxItem(remoteId: remoteId, status: status, message: message, lastError: lastError)
+        if let index = printReportOutbox.firstIndex(where: { $0.id == next.id }) {
+            printReportOutbox[index].message = message
+            printReportOutbox[index].lastError = lastError
+            printReportOutbox[index].updatedAt = Date()
+        } else {
+            printReportOutbox.append(next)
+        }
+    }
+
+    private func removePrintReportOutboxItem(remoteId: String, status: PrintReportOutboxStatus) {
+        let idempotencyKey = "\(remoteId):\(status.rawValue)"
+        printReportOutbox.removeAll { $0.idempotencyKey == idempotencyKey }
+    }
+
+    private func flushPrintReportOutbox() async {
+        guard !printReportOutbox.isEmpty else { return }
+
+        let pendingReports = printReportOutbox
+        for item in pendingReports {
+            do {
+                switch item.status {
+                case .printed:
+                    try await backendClient.reportPrinted(remoteId: item.remoteId)
+                case .failed:
+                    try await backendClient.reportFailed(remoteId: item.remoteId, message: item.message ?? "列印失敗")
+                }
+                removePrintReportOutboxItem(remoteId: item.remoteId, status: item.status)
+            } catch {
+                if let index = printReportOutbox.firstIndex(where: { $0.id == item.id }) {
+                    printReportOutbox[index].attemptCount += 1
+                    printReportOutbox[index].lastError = error.localizedDescription
+                    printReportOutbox[index].updatedAt = Date()
+                }
+            }
+        }
     }
 
     private func save<T: Encodable>(_ value: T, key: String) {
@@ -392,50 +563,28 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: key)
     }
 
+    private func persistSensitiveTokens() {
+        _ = KeychainStore.set(authSession.authToken, for: Self.authTokenKeychainKey)
+        _ = KeychainStore.set(deviceProfile.deviceToken, for: Self.deviceTokenKeychainKey)
+    }
+
     private static func load<T: Decodable>(_ type: T.Type, key: String) -> T? {
         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
         return try? JSONDecoder.app.decode(type, from: data)
     }
 
-    private static let samplePrintJobs: [PrintJob] = [
-        PrintJob(
-            id: UUID(),
-            remoteId: "demo-001",
-            invoiceNumber: "AB12345678",
-            randomNumber: "5678",
-            issuedAt: Date(),
-            sellerName: "OpenvoKao 測試店",
-            sellerIdentifier: "12345678",
-            buyerIdentifier: nil,
-            totalAmount: 150,
-            items: [
-                PrintJobItem(id: UUID(), name: "一般商品", quantity: 1, unitPrice: 100),
-                PrintJobItem(id: UUID(), name: "服務費", quantity: 1, unitPrice: 50)
-            ],
-            qrCodePayload: "AB12345678567820260709150",
-            barcodePayload: "AB12345678",
-            status: .pending,
-            lastMessage: nil
-        ),
-        PrintJob(
-            id: UUID(),
-            remoteId: "demo-002",
-            invoiceNumber: "AB12345679",
-            randomNumber: "9012",
-            issuedAt: Date().addingTimeInterval(-3600),
-            sellerName: "OpenvoKao 測試店",
-            sellerIdentifier: "12345678",
-            buyerIdentifier: "24536806",
-            totalAmount: 300,
-            items: [
-                PrintJobItem(id: UUID(), name: "測試商品", quantity: 2, unitPrice: 150)
-            ],
-            qrCodePayload: "AB12345679901220260709300",
-            barcodePayload: "AB12345679",
-            status: .pending,
-            lastMessage: nil
-        )
-    ]
+    private static func migrateSensitiveValue(legacyValue: String, keychainKey: String) -> String {
+        if let storedValue = KeychainStore.string(for: keychainKey),
+           !storedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return storedValue
+        }
+
+        let trimmedLegacyValue = legacyValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLegacyValue.isEmpty else { return "" }
+        _ = KeychainStore.set(trimmedLegacyValue, for: keychainKey)
+        return trimmedLegacyValue
+    }
+
 }
 
 private extension JSONEncoder {

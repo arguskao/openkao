@@ -2,6 +2,24 @@ name = "openvokao-backend"
 main = "src/index.ts"
 compatibility_date = "2026-07-09"
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.1
+persist = true
+
+[triggers]
+crons = ["*/10 * * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "openvokao-db"

@@ -5,6 +5,7 @@ struct AuthGatewayView: View {
     @State private var mode: AuthMode = .login
     @State private var loginAccount = ""
     @State private var loginPassword = ""
+    @State private var loginUnbindCode = ""
     @State private var registerName = ""
     @State private var registerPhone = ""
     @State private var registerAccount = ""
@@ -42,6 +43,8 @@ struct AuthGatewayView: View {
                             .autocorrectionDisabled()
 
                         SecureField("密碼", text: $loginPassword)
+                        SecureField("解除綁定碼（換手機時輸入）", text: $loginUnbindCode)
+                            .keyboardType(.numberPad)
                     }
                 } else {
                     Section("會員資料") {
@@ -103,7 +106,10 @@ struct AuthGatewayView: View {
             case .login:
                 try await store.loginAccount(
                     account: loginAccount.trimmingCharacters(in: .whitespacesAndNewlines),
-                    password: loginPassword
+                    password: loginPassword,
+                    unbindCode: loginUnbindCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? nil
+                        : loginUnbindCode.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             case .register:
                 try await store.registerAccount(

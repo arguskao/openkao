@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: TypeScript typecheck
+        working-directory: backend
+        run: npm run typecheck
+
+      - name: Worker integration tests
+        working-directory: backend
+        run: npm test
+
+      - name: D1 migration tests
+        working-directory: backend
+        run: npm run test:migrations
+
+      - name: Wrangler dry-run
+        working-directory: backend
+        run: npm run dry-run
+
+      - name: Unsigned iOS build
+        run: |
+          xcodebuild build \
+            -project openvoKao.xcodeproj \
+            -scheme openvoKao \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO

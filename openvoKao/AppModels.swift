@@ -34,10 +34,38 @@ struct PrintJobItem: Identifiable, Codable, Equatable {
 
 enum PrintJobStatus: String, Codable, CaseIterable, Identifiable {
     case pending = "待列印"
+    case printing = "傳送中"
     case printed = "已列印"
     case failed = "列印失敗"
 
     var id: String { rawValue }
+}
+
+enum PrintReportOutboxStatus: String, Codable {
+    case printed
+    case failed
+}
+
+struct PrintReportOutboxItem: Identifiable, Codable, Equatable {
+    var id: String
+    var remoteId: String
+    var status: PrintReportOutboxStatus
+    var message: String?
+    var idempotencyKey: String
+    var attemptCount: Int
+    var lastError: String?
+    var updatedAt: Date
+
+    init(remoteId: String, status: PrintReportOutboxStatus, message: String? = nil, lastError: String? = nil) {
+        self.remoteId = remoteId
+        self.status = status
+        self.message = message
+        self.idempotencyKey = "\(remoteId):\(status.rawValue)"
+        self.id = idempotencyKey
+        self.attemptCount = 0
+        self.lastError = lastError
+        self.updatedAt = Date()
+    }
 }
 
 struct SalesInvoice: Identifiable, Codable, Equatable {
@@ -80,9 +108,30 @@ enum SalesInvoiceStatus: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+struct SalesReportSummaryRow: Identifiable, Codable, Equatable {
+    var id: String { name }
+    var name: String
+    var quantity: Int
+    var total: Int
+}
+
+struct SalesReportSummary: Codable, Equatable {
+    var byProduct: [SalesReportSummaryRow]
+    var byStatus: [SalesReportSummaryRow]
+    var totalQuantity: Int
+    var totalAmount: Int
+}
+
+struct SalesReportPayload: Codable, Equatable {
+    var report: SalesReportSummary
+    var invoices: [SalesInvoice]
+    var nextCursor: String?
+}
+
 struct DeviceProfile: Codable, Equatable {
     var deviceName: String
     var serverURL: String
+    var installationId: String
     var deviceToken: String
     var isBound: Bool
     var backendDeviceId: String?
@@ -92,6 +141,7 @@ struct DeviceProfile: Codable, Equatable {
     static let initial = DeviceProfile(
         deviceName: "前台列印端",
         serverURL: "https://openvokao-backend.arguskao.workers.dev",
+        installationId: UUID().uuidString,
         deviceToken: "",
         isBound: false,
         backendDeviceId: nil,
@@ -102,16 +152,18 @@ struct DeviceProfile: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case deviceName
         case serverURL
-        case deviceToken
+        case installationId
         case isBound
         case backendDeviceId
         case companyName
         case lastVerifiedAt
+        case legacyDeviceToken = "deviceToken"
     }
 
     init(
         deviceName: String,
         serverURL: String,
+        installationId: String,
         deviceToken: String,
         isBound: Bool,
         backendDeviceId: String?,
@@ -120,6 +172,7 @@ struct DeviceProfile: Codable, Equatable {
     ) {
         self.deviceName = deviceName
         self.serverURL = serverURL
+        self.installationId = installationId
         self.deviceToken = deviceToken
         self.isBound = isBound
         self.backendDeviceId = backendDeviceId
@@ -131,11 +184,23 @@ struct DeviceProfile: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         deviceName = try container.decodeIfPresent(String.self, forKey: .deviceName) ?? Self.initial.deviceName
         serverURL = try container.decodeIfPresent(String.self, forKey: .serverURL) ?? Self.initial.serverURL
-        deviceToken = try container.decodeIfPresent(String.self, forKey: .deviceToken) ?? ""
+        installationId = try container.decodeIfPresent(String.self, forKey: .installationId) ?? Self.initial.installationId
+        deviceToken = try container.decodeIfPresent(String.self, forKey: .legacyDeviceToken) ?? ""
         isBound = try container.decodeIfPresent(Bool.self, forKey: .isBound) ?? false
         backendDeviceId = try container.decodeIfPresent(String.self, forKey: .backendDeviceId)
         companyName = try container.decodeIfPresent(String.self, forKey: .companyName)
         lastVerifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastVerifiedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(deviceName, forKey: .deviceName)
+        try container.encode(serverURL, forKey: .serverURL)
+        try container.encode(installationId, forKey: .installationId)
+        try container.encode(isBound, forKey: .isBound)
+        try container.encodeIfPresent(backendDeviceId, forKey: .backendDeviceId)
+        try container.encodeIfPresent(companyName, forKey: .companyName)
+        try container.encodeIfPresent(lastVerifiedAt, forKey: .lastVerifiedAt)
     }
 }
 
@@ -145,11 +210,11 @@ struct AuthSession: Codable, Equatable {
     var userName: String
     var account: String
     var phone: String
+    var role: String
     var companyId: Int
     var companyName: String
     var taxId: String
     var address: String
-    var appKey: String
 
     static let empty = AuthSession(
         authToken: "",
@@ -157,11 +222,11 @@ struct AuthSession: Codable, Equatable {
         userName: "",
         account: "",
         phone: "",
+        role: "staff",
         companyId: 0,
         companyName: "",
         taxId: "",
-        address: "",
-        appKey: ""
+        address: ""
     )
 
     var isAuthenticated: Bool {
@@ -169,16 +234,16 @@ struct AuthSession: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case authToken
+        case legacyAuthToken = "authToken"
         case userId
         case userName
         case account
         case phone
+        case role
         case companyId
         case companyName
         case taxId
         case address
-        case appKey
     }
 
     init(
@@ -187,27 +252,27 @@ struct AuthSession: Codable, Equatable {
         userName: String,
         account: String,
         phone: String,
+        role: String,
         companyId: Int,
         companyName: String,
         taxId: String,
-        address: String,
-        appKey: String
+        address: String
     ) {
         self.authToken = authToken
         self.userId = userId
         self.userName = userName
         self.account = account
         self.phone = phone
+        self.role = role
         self.companyId = companyId
         self.companyName = companyName
         self.taxId = taxId
         self.address = address
-        self.appKey = appKey
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        authToken = try container.decodeIfPresent(String.self, forKey: .authToken) ?? ""
+        authToken = try container.decodeIfPresent(String.self, forKey: .legacyAuthToken) ?? ""
         if let numeric = try container.decodeIfPresent(Int.self, forKey: .userId) {
             userId = numeric
         } else if let legacy = try container.decodeIfPresent(String.self, forKey: .userId),
@@ -219,11 +284,24 @@ struct AuthSession: Codable, Equatable {
         userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? ""
         account = try container.decodeIfPresent(String.self, forKey: .account) ?? ""
         phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        role = try container.decodeIfPresent(String.self, forKey: .role) ?? "staff"
         companyId = try container.decodeIfPresent(Int.self, forKey: .companyId) ?? 0
         companyName = try container.decodeIfPresent(String.self, forKey: .companyName) ?? ""
         taxId = try container.decodeIfPresent(String.self, forKey: .taxId) ?? ""
         address = try container.decodeIfPresent(String.self, forKey: .address) ?? ""
-        appKey = try container.decodeIfPresent(String.self, forKey: .appKey) ?? ""
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(userId, forKey: .userId)
+        try container.encode(userName, forKey: .userName)
+        try container.encode(account, forKey: .account)
+        try container.encode(phone, forKey: .phone)
+        try container.encode(role, forKey: .role)
+        try container.encode(companyId, forKey: .companyId)
+        try container.encode(companyName, forKey: .companyName)
+        try container.encode(taxId, forKey: .taxId)
+        try container.encode(address, forKey: .address)
     }
 }
 
@@ -234,7 +312,7 @@ struct CompanyProfile: Codable, Equatable {
     var companyName: String
     var taxId: String
     var address: String
-    var appKey: String
+    var hasAppKeyConfigured: Bool
 
     static let initial = CompanyProfile(
         memberName: "",
@@ -243,7 +321,7 @@ struct CompanyProfile: Codable, Equatable {
         companyName: "",
         taxId: "12345678",
         address: "",
-        appKey: "sHeq7t8G1wiQvhAuIM27"
+        hasAppKeyConfigured: false
     )
 
     enum CodingKeys: String, CodingKey {
@@ -254,7 +332,8 @@ struct CompanyProfile: Codable, Equatable {
         case legacyName = "name"
         case taxId
         case address
-        case appKey
+        case hasAppKeyConfigured
+        case legacyAppKey = "appKey"
     }
 
     init(
@@ -264,7 +343,7 @@ struct CompanyProfile: Codable, Equatable {
         companyName: String,
         taxId: String,
         address: String,
-        appKey: String
+        hasAppKeyConfigured: Bool
     ) {
         self.memberName = memberName
         self.phone = phone
@@ -272,7 +351,7 @@ struct CompanyProfile: Codable, Equatable {
         self.companyName = companyName
         self.taxId = taxId
         self.address = address
-        self.appKey = appKey
+        self.hasAppKeyConfigured = hasAppKeyConfigured
     }
 
     init(from decoder: Decoder) throws {
@@ -285,7 +364,12 @@ struct CompanyProfile: Codable, Equatable {
             ?? ""
         taxId = try container.decodeIfPresent(String.self, forKey: .taxId) ?? Self.initial.taxId
         address = try container.decodeIfPresent(String.self, forKey: .address) ?? ""
-        appKey = try container.decodeIfPresent(String.self, forKey: .appKey) ?? Self.initial.appKey
+        if let hasAppKeyConfigured = try container.decodeIfPresent(Bool.self, forKey: .hasAppKeyConfigured) {
+            self.hasAppKeyConfigured = hasAppKeyConfigured
+        } else {
+            let legacyAppKey = try container.decodeIfPresent(String.self, forKey: .legacyAppKey) ?? ""
+            self.hasAppKeyConfigured = !legacyAppKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -296,6 +380,6 @@ struct CompanyProfile: Codable, Equatable {
         try container.encode(companyName, forKey: .companyName)
         try container.encode(taxId, forKey: .taxId)
         try container.encode(address, forKey: .address)
-        try container.encode(appKey, forKey: .appKey)
+        try container.encode(hasAppKeyConfigured, forKey: .hasAppKeyConfigured)
     }
 }

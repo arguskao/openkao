@@ -71,9 +71,18 @@ struct SalesReportView: View {
     @State private var endDate = Date()
     @State private var grouping: SalesReportGrouping = .product
     @State private var showInvoiceList = false
+    @State private var reportSummary = SalesReportSummary(
+        byProduct: [],
+        byStatus: [],
+        totalQuantity: 0,
+        totalAmount: 0
+    )
     @State private var salesInvoices: [SalesInvoice] = []
+    @State private var nextCursor: String?
     @State private var isLoading = false
+    @State private var isLoadingMore = false
     @State private var errorMessage: String?
+    @State private var loadTask: Task<Void, Never>?
 
     var body: some View {
         NavigationView {
@@ -137,7 +146,7 @@ struct SalesReportView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        Task { await loadSalesData() }
+                        scheduleReload()
                     } label: {
                         if isLoading {
                             ProgressView()
@@ -149,13 +158,16 @@ struct SalesReportView: View {
                 }
             }
             .task {
-                await loadSalesData()
+                scheduleReload()
             }
             .onChange(of: startDate) { _ in
-                Task { await loadSalesData() }
+                scheduleReload()
             }
             .onChange(of: endDate) { _ in
-                Task { await loadSalesData() }
+                scheduleReload()
+            }
+            .onDisappear {
+                loadTask?.cancel()
             }
         }
     }
@@ -194,11 +206,11 @@ struct SalesReportView: View {
                         Text("總計")
                             .frame(maxWidth: .infinity, alignment: .leading)
 
-                        Text("\(reportRows.reduce(0) { $0 + $1.quantity })")
+                        Text("\(reportSummary.totalQuantity)")
                             .frame(width: 72, alignment: .center)
                             .monospacedDigit()
 
-                        Text(currency(reportRows.reduce(0) { $0 + $1.total }))
+                        Text(currency(reportSummary.totalAmount))
                             .frame(width: 110, alignment: .trailing)
                             .monospacedDigit()
                     }
@@ -232,6 +244,17 @@ struct SalesReportView: View {
                         .font(.body)
                         .padding(.vertical, 4)
                     }
+
+                    if nextCursor != nil {
+                        HStack {
+                            Spacer()
+                            Button(isLoadingMore ? "載入中..." : "載入更多") {
+                                Task { await loadMoreInvoices() }
+                            }
+                            .disabled(isLoadingMore)
+                            Spacer()
+                        }
+                    }
                 }
                 .listStyle(.plain)
             }
@@ -239,52 +262,65 @@ struct SalesReportView: View {
     }
 
     private var reportRows: [SalesReportRow] {
-        var grouped: [String: SalesReportRow] = [:]
-
         switch grouping {
         case .product:
-            for invoice in salesInvoices {
-                for item in invoice.items {
-                    let existing = grouped[item.name] ?? SalesReportRow(name: item.name, quantity: 0, total: 0)
-                    grouped[item.name] = SalesReportRow(
-                        name: item.name,
-                        quantity: existing.quantity + item.quantity,
-                        total: existing.total + item.amount
-                    )
-                }
-            }
+            return reportSummary.byProduct.map { SalesReportRow(name: $0.name, quantity: $0.quantity, total: $0.total) }
         case .status:
-            for invoice in salesInvoices {
-                let key = invoice.printStatus.title
-                let existing = grouped[key] ?? SalesReportRow(name: key, quantity: 0, total: 0)
-                grouped[key] = SalesReportRow(
-                    name: key,
-                    quantity: existing.quantity + 1,
-                    total: existing.total + invoice.totalAmount
-                )
-            }
-        }
-
-        return grouped.values.sorted {
-            if $0.total == $1.total {
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-            return $0.total > $1.total
+            return reportSummary.byStatus.map { SalesReportRow(name: $0.name, quantity: $0.quantity, total: $0.total) }
         }
     }
 
-    private func loadSalesData() async {
+    private func scheduleReload() {
+        loadTask?.cancel()
+        loadTask = Task {
+            await loadSalesData(reset: true)
+        }
+    }
+
+    private func loadSalesData(reset: Bool) async {
         guard store.isAuthenticated else { return }
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
+        if reset {
+            isLoading = true
+            errorMessage = nil
+        } else {
+            isLoadingMore = true
+        }
+        defer {
+            if reset {
+                isLoading = false
+            } else {
+                isLoadingMore = false
+            }
+        }
 
         do {
-            salesInvoices = try await store.fetchSalesInvoices(startDate: startDate, endDate: endDate)
+            let payload = try await store.fetchSalesReport(
+                startDate: startDate,
+                endDate: endDate,
+                cursor: reset ? nil : nextCursor
+            )
+            guard !Task.isCancelled else { return }
+            if reset {
+                reportSummary = payload.report
+                salesInvoices = payload.invoices
+            } else {
+                salesInvoices += payload.invoices
+            }
+            nextCursor = payload.nextCursor
         } catch {
-            salesInvoices = []
+            guard !Task.isCancelled else { return }
+            if reset {
+                salesInvoices = []
+                nextCursor = nil
+                reportSummary = SalesReportSummary(byProduct: [], byStatus: [], totalQuantity: 0, totalAmount: 0)
+            }
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func loadMoreInvoices() async {
+        guard nextCursor != nil, !isLoadingMore else { return }
+        await loadSalesData(reset: false)
     }
 }
 
@@ -377,13 +413,6 @@ struct PrintQueueView: View {
             }
             .navigationTitle("列印端")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        store.resetSampleJobs()
-                    } label: {
-                        Image(systemName: "shippingbox")
-                    }
-                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         Task {
@@ -415,10 +444,11 @@ struct PrintQueueView: View {
 
     private func print(_ job: PrintJob) async {
         do {
-            try printerManager.print(job)
+            store.markSending(job)
+            try await printerManager.print(job)
             await store.markPrintedAndReport(job)
             selectedJob = nil
-            alert = AppAlert(title: "已送出列印", message: job.invoiceNumber)
+            alert = AppAlert(title: "已送至印表機", message: job.invoiceNumber)
         } catch {
             await store.markFailedAndReport(job, message: error.localizedDescription)
             alert = AppAlert(title: "列印失敗", message: error.localizedDescription)
@@ -471,7 +501,7 @@ struct PrintJobDetailView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("列印") { onPrint() }
-                        .disabled(!printerManager.isPrinterReady)
+                        .disabled(!printerManager.isPrinterReady || printerManager.isPrinting)
                 }
             }
         }
@@ -666,10 +696,11 @@ struct InvoiceManagementView: View {
 
     private func reprint(_ job: PrintJob) async {
         do {
-            try printerManager.print(job)
+            store.markSending(job)
+            try await printerManager.print(job)
             await store.markPrintedAndReport(job)
             selectedJob = nil
-            alert = AppAlert(title: "已送出列印", message: job.invoiceNumber)
+            alert = AppAlert(title: "已送至印表機", message: job.invoiceNumber)
         } catch {
             await store.markFailedAndReport(job, message: error.localizedDescription)
             alert = AppAlert(title: "列印失敗", message: error.localizedDescription)
@@ -806,9 +837,9 @@ private struct PrinterStatusSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: printerManager.isPrinterReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .foregroundColor(printerManager.isPrinterReady ? .green : .orange)
-                Text(printerManager.isPrinterReady ? "印表機已準備好" : "請先連線印表機")
+                Image(systemName: printerManager.isPrinting ? "arrow.triangle.2.circlepath.circle.fill" : (printerManager.isPrinterReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"))
+                    .foregroundColor(printerManager.isPrinting ? .blue : (printerManager.isPrinterReady ? .green : .orange))
+                Text(printerManager.isPrinting ? "資料傳送中" : (printerManager.isPrinterReady ? "印表機已準備好" : "請先連線印表機"))
                     .font(.headline)
             }
 
@@ -868,6 +899,8 @@ private struct StatusBadge: View {
         switch status {
         case .pending:
             return .blue
+        case .printing:
+            return .orange
         case .printed:
             return .green
         case .failed:

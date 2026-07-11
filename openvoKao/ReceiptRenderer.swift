@@ -12,6 +12,15 @@ enum ReceiptPaperWidth {
             return 48
         }
     }
+
+    var title: String {
+        switch self {
+        case .mm58:
+            return "58mm"
+        case .mm80:
+            return "80mm"
+        }
+    }
 }
 
 struct ReceiptRenderer {
@@ -25,12 +34,13 @@ struct ReceiptRenderer {
 
     func render(job: PrintJob) -> Data {
         var data = Data()
+        let periodText = invoicePeriodText(for: job.issuedAt)
         data.append(contentsOf: ESC.initialize)
         data.append(contentsOf: ESC.selectBig5)
         data.append(contentsOf: ESC.alignCenter)
         data.appendLine(job.sellerName ?? "電子發票證明聯")
         data.appendLine("電子發票證明聯")
-        data.appendLine("114年07-08月")
+        data.appendLine(periodText)
         data.append(contentsOf: ESC.doubleSize)
         data.appendLine(job.invoiceNumber)
         data.append(contentsOf: ESC.normalSize)
@@ -70,7 +80,7 @@ struct ReceiptRenderer {
     }
 
     private func appendWrapped(_ text: String, to data: inout Data) {
-        let sanitized = text.receiptSafeText
+        let sanitized = text.receiptBig5SafeText
         var current = ""
 
         for character in sanitized {
@@ -93,12 +103,28 @@ struct ReceiptRenderer {
     }
 
     private func twoColumn(_ left: String, _ right: String) -> String {
-        let safeLeft = left.receiptSafeText
-        let safeRight = right.receiptSafeText
+        let safeLeft = left.receiptBig5SafeText
+        let safeRight = right.receiptBig5SafeText
         let leftWidth = safeLeft.receiptWidth
         let rightWidth = safeRight.receiptWidth
-        let spaces = max(1, columns - leftWidth - rightWidth)
-        return safeLeft + String(repeating: " ", count: spaces) + safeRight
+        if leftWidth + 1 + rightWidth <= columns {
+            let spaces = max(1, columns - leftWidth - rightWidth)
+            return safeLeft + String(repeating: " ", count: spaces) + safeRight
+        }
+
+        let maxLeftWidth = max(1, columns - rightWidth - 1)
+        let truncatedLeft = safeLeft.truncatedToReceiptWidth(maxLeftWidth)
+        let spaces = max(1, columns - truncatedLeft.receiptWidth - rightWidth)
+        return truncatedLeft + String(repeating: " ", count: spaces) + safeRight
+    }
+
+    private func invoicePeriodText(for issuedAt: Date) -> String {
+        let calendar = Calendar(identifier: .gregorian)
+        let year = calendar.component(.year, from: issuedAt) - 1911
+        let month = calendar.component(.month, from: issuedAt)
+        let startMonth = month.isMultiple(of: 2) ? month - 1 : month
+        let endMonth = startMonth + 1
+        return String(format: "%d年%02d-%02d月", year, startMonth, endMonth)
     }
 }
 
@@ -122,22 +148,28 @@ private extension Data {
     }
 
     mutating func appendEncodedText(_ string: String) {
-        if let data = string.data(using: .big5) {
+        let safe = string.receiptBig5SafeText
+        if let data = safe.data(using: .big5) {
             append(data)
             return
         }
 
-        append(Data(string.receiptSafeText.utf8))
+        append(Data(safe.utf8))
     }
 
     mutating func appendQRCode(_ payload: String) {
         let data = Data(payload.utf8)
+        guard data.count <= 7089 else { return }
+
         append(contentsOf: [0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00])
         append(contentsOf: [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x05])
         append(contentsOf: [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31])
 
         let storeLength = data.count + 3
-        append(contentsOf: [0x1D, 0x28, 0x6B, UInt8(storeLength % 256), UInt8(storeLength / 256), 0x31, 0x50, 0x30])
+        guard storeLength <= 65535 else { return }
+        let low = UInt8(storeLength & 0xFF)
+        let high = UInt8((storeLength >> 8) & 0xFF)
+        append(contentsOf: [0x1D, 0x28, 0x6B, low, high, 0x31, 0x50, 0x30])
         append(data)
         append(contentsOf: [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30])
     }
@@ -156,7 +188,7 @@ private extension Data {
 }
 
 private extension String {
-    var receiptSafeText: String {
+    var receiptBig5SafeText: String {
         map { character in
             String(character).data(using: .big5) == nil ? "?" : String(character)
         }
@@ -167,6 +199,21 @@ private extension String {
         reduce(0) { partialResult, character in
             partialResult + (character.isASCII ? 1 : 2)
         }
+    }
+
+    func truncatedToReceiptWidth(_ maxWidth: Int) -> String {
+        guard maxWidth > 0 else { return "" }
+        var output = ""
+
+        for character in self {
+            let next = output + String(character)
+            if next.receiptWidth > maxWidth {
+                break
+            }
+            output = next
+        }
+
+        return output
     }
 }
 

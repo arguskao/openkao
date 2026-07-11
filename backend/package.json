@@ -6,12 +6,19 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "test": "tsx --test tests/worker.integration.test.ts",
+    "test:migrations": "tsx --test tests/migrations.test.ts",
     "typecheck": "tsc --noEmit",
     "d1:migrate:local": "wrangler d1 migrations apply openvokao-db --local",
     "d1:migrate:remote": "wrangler d1 migrations apply openvokao-db --remote"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "^26.1.1",
+    "@types/sql.js": "^1.4.11",
+    "sql.js": "^1.14.1",
+    "tsx": "^4.23.0",
     "typescript": "^5.8.3",
     "wrangler": "^4.107.1"
   }
