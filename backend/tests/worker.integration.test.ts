@@ -59,6 +59,41 @@ test("Worker integration: tenant isolation and auth", async () => {
   assert.equal(badAdmin.status, 401);
 });
 
+test("Worker integration: validation errors include request id, localized message, and field errors", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenanth", "88990011");
+
+  const response = await api(env, "/api/catalog/products", {
+    method: "POST",
+    authToken: tenant.authToken,
+    headers: { "cf-ray": "test-request-id" },
+    body: {
+      categoryId: null,
+      name: "超大金額",
+      price: 100_000_000,
+      status: "顯示",
+      taxType: "含稅",
+      sortOrder: 0
+    }
+  });
+  assert.equal(response.status, 400);
+
+  const payload = await response.json() as {
+    code: string;
+    message: string;
+    requestId: string;
+    fieldErrors: Array<{ field: string; code: string; message: string }>;
+  };
+  assert.equal(payload.code, "price_invalid");
+  assert.equal(payload.message, "這個欄位格式不正確。");
+  assert.equal(payload.requestId, "test-request-id");
+  assert.deepEqual(payload.fieldErrors, [{
+    field: "price",
+    code: "invalid",
+    message: "這個欄位格式不正確。"
+  }]);
+});
+
 test("Worker integration: claim race, status transition, idempotency, invalid payload", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "tenantc", "11223344");
@@ -134,6 +169,16 @@ test("Worker integration: claim race, status transition, idempotency, invalid pa
     body: printJobBody(tenant.company.id, "BAD", "invalid-key")
   });
   assert.equal(invalidPayload.status, 400);
+
+  const invalidAmount = await api(env, "/api/admin/print-jobs", {
+    method: "POST",
+    token: "admin-token",
+    body: {
+      ...printJobBody(tenant.company.id, "AB12345677", "invalid-amount-key"),
+      totalAmount: 100_000_000
+    }
+  });
+  assert.equal(invalidAmount.status, 400);
 
   const secondCreate = await apiJson<{ id: string }>(
     env,
@@ -294,6 +339,97 @@ test("Worker integration: request logs and auth audit are structured without sec
   assert.equal(audit?.details_json.includes("invalid_credentials"), true);
 });
 
+test("Worker integration: auth sessions are hashed and legacy sessions upgrade", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantf", "66778899");
+
+  const stored = await env.DB.prepare(
+    `SELECT token, token_hash
+     FROM auth_sessions
+     WHERE user_id = ?`
+  )
+    .bind(tenant.user.id)
+    .first<{ token: string; token_hash: string | null }>();
+  assert.ok(stored?.token_hash);
+  assert.notEqual(stored?.token, tenant.authToken);
+  assert.match(stored?.token ?? "", /^stored:/);
+
+  await env.DB.prepare(
+    `UPDATE auth_sessions
+     SET token = ?, token_hash = NULL
+     WHERE user_id = ?`
+  )
+    .bind(tenant.authToken, tenant.user.id)
+    .run();
+
+  const me = await api(env, "/api/auth/me", { authToken: tenant.authToken });
+  assert.equal(me.status, 200);
+
+  const upgraded = await env.DB.prepare(
+    `SELECT token, token_hash
+     FROM auth_sessions
+     WHERE user_id = ?`
+  )
+    .bind(tenant.user.id)
+    .first<{ token: string; token_hash: string | null }>();
+  assert.ok(upgraded?.token_hash);
+  assert.notEqual(upgraded?.token, tenant.authToken);
+  assert.match(upgraded?.token ?? "", /^stored:/);
+});
+
+test("Worker integration: admin hash secret and role authorization", async () => {
+  const env = await makeEnv({
+    ADMIN_TOKEN: undefined,
+    ADMIN_TOKEN_HASH: await hashAdminTokenForTest("admin-token")
+  });
+  const tenant = await registerTenant(env, "tenantg", "77889900");
+
+  const adminOk = await api(env, "/api/admin/summary", { token: "admin-token" });
+  assert.equal(adminOk.status, 200);
+  const adminBad = await api(env, "/api/admin/summary", { token: "wrong-token" });
+  assert.equal(adminBad.status, 401);
+
+  await env.DB.prepare(
+    `UPDATE users
+     SET role = 'staff'
+     WHERE id = ?`
+  )
+    .bind(tenant.user.id)
+    .run();
+
+  const staffCategory = await api(env, "/api/catalog/categories", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: { name: "Staff OK", sortOrder: 0, status: "顯示" }
+  });
+  assert.equal(staffCategory.status, 201);
+
+  const staffDeviceCreate = await api(env, "/api/devices", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: { name: "Staff Device", platform: "ios", installationId: "staff-device" }
+  });
+  assert.equal(staffDeviceCreate.status, 403);
+
+  await env.DB.prepare(
+    `UPDATE users
+     SET role = 'printer'
+     WHERE id = ?`
+  )
+    .bind(tenant.user.id)
+    .run();
+
+  const printerCategory = await api(env, "/api/catalog/categories", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: { name: "Printer Blocked", sortOrder: 0, status: "顯示" }
+  });
+  assert.equal(printerCategory.status, 403);
+
+  const devicePending = await api(env, "/api/print-jobs/pending", { token: tenant.device.token });
+  assert.equal(devicePending.status, 200);
+});
+
 test("Worker scheduled observability logs stale print queues", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "tenante", "55667788");
@@ -334,6 +470,15 @@ async function makeEnv(overrides: Partial<TestEnv> = {}): Promise<TestEnv> {
     ADMIN_TOKEN: "admin-token",
     ...overrides
   };
+}
+
+async function hashAdminTokenForTest(token: string): Promise<string> {
+  return sha256HexForTest(`admin:${token}`);
+}
+
+async function sha256HexForTest(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function registerTenant(env: TestEnv, account: string, taxId: string) {

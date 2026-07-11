@@ -20,6 +20,14 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      - name: Wrangler config check
+        working-directory: backend
+        run: npm run wrangler:check
+
+      - name: Wrangler generated types check
+        working-directory: backend
+        run: npm run types:wrangler:check
+
       - name: TypeScript typecheck
         working-directory: backend
         run: npm run typecheck
@@ -43,4 +51,12 @@ jobs:
             -scheme openvoKao \
             -configuration Debug \
             -sdk iphonesimulator \
+            -derivedDataPath build/ci-derived-data \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload unsigned iOS app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvoKao-unsigned-simulator-app
+          path: build/ci-derived-data/Build/Products/Debug-iphonesimulator/openvoKao.app
+          if-no-files-found: error

@@ -10,6 +10,7 @@ struct ProductCatalogView: View {
     @State private var pendingDeleteProduct: CatalogProduct?
     @State private var alert: CatalogAlert?
     @State private var priceDecimalPlaces = 0
+    @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
         NavigationView {
@@ -28,7 +29,7 @@ struct ProductCatalogView: View {
                         .padding(.top, 12)
                         .padding(.bottom, 8)
 
-                        if let syncMessage = store.syncMessage {
+                        if let syncMessage = store.catalogSyncStatus.message {
                             Text(syncMessage)
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
@@ -50,17 +51,15 @@ struct ProductCatalogView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if !store.deviceProfile.deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Button {
-                            Task {
-                                await store.refreshCatalog()
-                            }
+                            startRefreshCatalog()
                         } label: {
-                            if store.isSyncing {
+                            if store.catalogSyncStatus.isSyncing {
                                 ProgressView()
                             } else {
                                 Image(systemName: "arrow.clockwise")
                             }
                         }
-                        .disabled(store.isSyncing)
+                        .disabled(store.catalogSyncStatus.isSyncing)
 
                         Button {
                             if mode == .categories {
@@ -86,6 +85,10 @@ struct ProductCatalogView: View {
             }
             .onChange(of: store.catalogPriceDecimalPlaces) { newValue in
                 priceDecimalPlaces = newValue
+            }
+            .onDisappear {
+                refreshTask?.cancel()
+                refreshTask = nil
             }
             .sheet(item: $categoryEditor) { editor in
                 CategoryEditorSheet(editor: editor) { updated in
@@ -141,6 +144,13 @@ struct ProductCatalogView: View {
             .alert(item: $alert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
             }
+        }
+    }
+
+    private func startRefreshCatalog() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            await store.refreshCatalog()
         }
     }
 

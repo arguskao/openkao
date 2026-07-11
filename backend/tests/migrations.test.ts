@@ -66,6 +66,61 @@ test("D1 old schema upgrade keeps row counts, foreign keys, and key queries vali
   });
 });
 
+test("D1 integrity guards reject invalid business data", async () => {
+  const d1 = await createSqlD1();
+  const db = d1.rawDatabase;
+
+  applyMigrations(db);
+  db.run(`
+    INSERT INTO companies (id, name, tax_id, unbind_code)
+    VALUES (1, 'Guard Company', '12345678', '12345678');
+
+    INSERT INTO categories (id, company_id, name, sort_order, status)
+    VALUES (1, 1, '飲品', 0, '顯示');
+
+    INSERT INTO invoices (
+      id, company_id, invoice_number, random_number, issued_at,
+      seller_identifier, total_amount
+    )
+    VALUES ('invoice-guard', 1, 'AB12345678', '1234', '2026-07-09T13:59:00Z', '12345678', 45);
+  `);
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO products (
+        id, company_id, category_id, name, price, decimal_places,
+        is_active, tax_type, sort_order
+      )
+      VALUES (1, 1, 1, '錯誤商品', -1, 0, 1, '含稅', 0)
+    `),
+    /products_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO invoice_items (id, invoice_id, name, quantity, unit_price, amount)
+      VALUES ('item-guard', 'invoice-guard', '奶茶', 2, 45, 45)
+    `),
+    /invoice_items_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO users (id, company_id, email, password_hash, name, phone, role)
+      VALUES (1, 1, 'owner@example.test', 'hash', 'Owner', NULL, 'manager')
+    `),
+    /users_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO print_jobs (id, company_id, invoice_id, status, payload_json, attempt_count)
+      VALUES ('job-guard', 1, 'invoice-guard', 'unknown', '{}', 0)
+    `),
+    /print_jobs_integrity_check_failed/
+  );
+});
+
 function applyOnlyInitialMigration(db: Database): void {
   db.exec(fs.readFileSync(path.resolve(process.cwd(), "migrations/0001_initial.sql"), "utf8"));
 }

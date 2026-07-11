@@ -309,7 +309,10 @@ struct BackendClient {
 
         guard (200..<300).contains(httpResponse.statusCode) else {
             let error = try? JSONDecoder.backend.decode(ErrorResponse.self, from: data)
-            throw BackendError.server(statusCode: httpResponse.statusCode, message: error?.error ?? "HTTP \(httpResponse.statusCode)")
+            throw BackendError.server(
+                statusCode: httpResponse.statusCode,
+                message: error?.displayMessage ?? "HTTP \(httpResponse.statusCode)"
+            )
         }
 
         return try JSONDecoder.backend.decode(ResponseBody.self, from: data)
@@ -543,6 +546,71 @@ private struct EmptyResponse: Decodable {
 
 private struct ErrorResponse: Decodable {
     let error: String
+    let code: String?
+    let message: String?
+    let fieldErrors: [FieldErrorResponse]?
+
+    var displayMessage: String {
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return message
+        }
+        return Self.localizedMessage(for: code ?? error)
+    }
+
+    private static func localizedMessage(for code: String) -> String {
+        switch code {
+        case "account_already_registered":
+            return "這個帳號已經註冊。"
+        case "account_invalid":
+            return "帳號只能使用英文字母、數字、底線或減號。"
+        case "company_tax_id_exists":
+            return "這個統一編號已經註冊。"
+        case "device_binding_locked":
+            return "這個帳號已綁定其他手機，請輸入解除綁定碼後再登入。"
+        case "forbidden":
+            return "權限不足。"
+        case "invalid_auth_token":
+            return "登入已失效，請重新登入。"
+        case "invalid_credentials":
+            return "帳號或密碼不正確。"
+        case "invalid_device_token":
+            return "裝置授權已失效，請重新登入或重新綁定。"
+        case "missing_auth_token":
+            return "請先登入帳號。"
+        case "missing_device_token":
+            return "請先完成裝置綁定。"
+        case "owner_required":
+            return "此操作需要老闆權限。"
+        case "password_too_short":
+            return "密碼長度不足。"
+        case "price_decimal_places_precision_loss":
+            return "目前商品價格含有更細的小數，不能直接降低小數位數。"
+        case "request_body_too_large":
+            return "資料內容太大。"
+        case "total_amount_mismatch":
+            return "總金額必須等於所有品項小計加總。"
+        default:
+            if code.hasSuffix("_required") {
+                return "這個欄位必填。"
+            }
+            if code.hasSuffix("_invalid") {
+                return "這個欄位格式不正確。"
+            }
+            if code.hasSuffix("_too_long") {
+                return "這個欄位太長。"
+            }
+            if code.hasSuffix("_too_many") {
+                return "資料筆數太多。"
+            }
+            return code
+        }
+    }
+}
+
+private struct FieldErrorResponse: Decodable {
+    let field: String
+    let code: String
+    let message: String?
 }
 
 private extension JSONDecoder {

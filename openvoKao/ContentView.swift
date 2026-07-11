@@ -380,6 +380,7 @@ struct PrintQueueView: View {
     @EnvironmentObject private var printerManager: PrinterManager
     @State private var selectedJob: PrintJob?
     @State private var alert: AppAlert?
+    @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
         NavigationView {
@@ -388,7 +389,7 @@ struct PrintQueueView: View {
                     PrinterStatusSummary()
                 }
 
-                if let syncMessage = store.syncMessage {
+                if let syncMessage = printQueueSyncMessage {
                     Section("同步") {
                         Text(syncMessage)
                             .foregroundColor(.secondary)
@@ -415,17 +416,15 @@ struct PrintQueueView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        Task {
-                            await store.refreshPendingJobs()
-                        }
+                        startRefreshPendingJobs()
                     } label: {
-                        if store.isSyncing {
+                        if store.queueSyncStatus.isSyncing {
                             ProgressView()
                         } else {
                             Image(systemName: "arrow.clockwise")
                         }
                     }
-                    .disabled(store.isSyncing)
+                    .disabled(store.queueSyncStatus.isSyncing)
                 }
             }
             .sheet(item: $selectedJob) { job in
@@ -439,6 +438,21 @@ struct PrintQueueView: View {
             .alert(item: $alert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
             }
+            .onDisappear {
+                refreshTask?.cancel()
+                refreshTask = nil
+            }
+        }
+    }
+
+    private var printQueueSyncMessage: String? {
+        store.reportSyncStatus.message ?? store.queueSyncStatus.message
+    }
+
+    private func startRefreshPendingJobs() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            await store.refreshPendingJobs()
         }
     }
 
@@ -535,6 +549,7 @@ struct InvoiceManagementView: View {
     @State private var currentPage = 1
     @State private var selectedJob: PrintJob?
     @State private var alert: AppAlert?
+    @State private var refreshTask: Task<Void, Never>?
 
     private let itemsPerPage = 15
 
@@ -583,7 +598,7 @@ struct InvoiceManagementView: View {
                     .background(Color(uiColor: .secondarySystemGroupedBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                    if let syncMessage = store.syncMessage {
+                    if let syncMessage = invoiceSyncMessage {
                         Text(syncMessage)
                             .font(.footnote)
                             .foregroundColor(.secondary)
@@ -658,17 +673,15 @@ struct InvoiceManagementView: View {
 
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        Task {
-                            await store.refreshPendingJobs()
-                        }
+                        startRefreshPendingJobs()
                     } label: {
-                        if store.isSyncing {
+                        if store.queueSyncStatus.isSyncing {
                             ProgressView()
                         } else {
                             Image(systemName: "arrow.clockwise")
                         }
                     }
-                    .disabled(store.isSyncing || store.deviceProfile.deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(store.queueSyncStatus.isSyncing || store.deviceProfile.deviceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .onChange(of: selectedDate) { _ in
@@ -691,6 +704,21 @@ struct InvoiceManagementView: View {
             .alert(item: $alert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
             }
+            .onDisappear {
+                refreshTask?.cancel()
+                refreshTask = nil
+            }
+        }
+    }
+
+    private var invoiceSyncMessage: String? {
+        store.reportSyncStatus.message ?? store.queueSyncStatus.message
+    }
+
+    private func startRefreshPendingJobs() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            await store.refreshPendingJobs()
         }
     }
 

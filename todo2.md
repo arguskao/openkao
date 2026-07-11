@@ -1,19 +1,25 @@
 # OpenvoKao 程式碼優化 TODO 2
 
-更新日期：2026-07-10
+更新日期：2026-07-11
 
 ## 審查結論
 
-目前 iOS 與 Worker 都能編譯，D1 migration 也能從空資料庫完整套用；最需要優先處理的不是畫面微調，而是「列印是否真的完成」、「同一張發票會不會重複列印」、「憑證是否安全」及「發票資料是否保持一致」。以下只列程式碼審查後新增或需要提高優先級的工作，產品功能清單仍以 `todo.md` 為主。
+目前 iOS 與 Worker 都能編譯，D1 migration 可從空資料庫與舊 fixture 完整升級，列印狀態機、token 安全、資料完整性、登入/session、防重複列印與 CI gate 都已補上。此文件現在保留正式上線前仍需確認的風險與維護工作，產品功能清單仍以 `todo.md` 為主。
+
+## 目前剩餘重點
+
+- 外部確認：若舊 App Key 曾經是真實可用憑證，需在供應商端撤銷或輪替。
+- 發票正式性：需用財政部或正式測試資料驗證 QR code、條碼、期別、總額與統編。
+- 維護性：Worker 主檔已拆出多個模組，但 `catalog / invoices / print-jobs / reports / db` 還可逐步拆出。
 
 ## 已驗證的基線
 
 - [x] `npm run typecheck` 通過。
-- [x] iOS Debug／iPhoneOS、iOS 15 deployment target、停用簽章的 build 通過。
+- [x] iOS Debug／iPhoneOS、iOS 15 deployment target、停用簽章 build、實機簽章 build 通過。
 - [x] `wrangler deploy --dry-run` 通過，Worker bundle 可產生。
-- [x] D1 `0001`～`0010` migration 可在 `/tmp` 的全新本機資料庫依序套用成功。
-- [ ] 尚無 iOS unit test、UI test 或 Worker 自動化測試。
-- [ ] migration 目前只驗證空庫；尚未驗證「已有公司、帳號、商品、發票、列印紀錄」時升級後資料仍完整。
+- [x] D1 `0001`～`0023` migration 可在 `/tmp` 的全新本機資料庫依序套用成功。
+- [x] 已補 iOS unit test、Worker 自動化測試與 CI gate。
+- [x] migration 已驗證空庫與「已有公司、帳號、商品、發票、列印紀錄」fixture 升級後資料仍完整。
 
 ---
 
@@ -70,7 +76,7 @@
 - [x] 從 source、預設值、sample data 移除真正 secret，改由後端從資料庫讀取；Git 歷史是否仍含舊值仍待另外確認。
 - [x] iOS 模型與 API response 不再包含 `appKey`；前端最多顯示「已設定／未設定」。
 - [x] auth token 與 device token 改存 Keychain，登出時刪除；一般 UI 設定才留在 `UserDefaults`。
-- [ ] 後端資料庫不要保存明文 session／device token，改存不可逆雜湊並支援撤銷。
+- [x] 後端資料庫不要保存明文 session／device token，改存不可逆雜湊並支援撤銷。
 
 驗收：對 repo 和產物掃描找不到真正 secret；從裝置備份／UserDefaults 無法取得可直接使用的 token。
 
@@ -80,12 +86,12 @@
 
 證據：`backend/src/index.ts:236-338`、`backend/src/index.ts:901-949`、`backend/src/index.ts:1233-1326`
 
-- [ ] 將每個業務動作需要的 statements 用 D1 原子批次／等價交易方式一次提交。
+- [x] 將每個業務動作需要的 statements 用 D1 原子批次／等價交易方式一次提交；註冊、建發票列印任務、價格小數位轉換已改成 batch。
 - [x] 發票加入公司範圍的唯一鍵與 idempotency key，避免 API retry 重複建單。
 - [x] 建立列印任務前驗證 `deviceId` 屬於同一 `companyId`。
-- [ ] 驗證 `totalAmount == sum(quantity * unitPrice)`，並定義稅額、折扣、退款與小數位規則。
+- [x] 驗證 `totalAmount == sum(quantity * unitPrice)`；目前列印任務採整數最小金額單位、品項小計精確加總，折扣／退款尚未作為獨立欄位支援，避免負值繞過。
 - [x] 驗證發票號碼、隨機碼、統編、日期格式、items 數量與每個文字欄位長度。
-- [ ] 重要狀態欄位加入 `CHECK` constraint；金額與數量加入合理上下限，避免溢位或負值。
+- [x] 重要狀態欄位加入資料庫完整性 guard；金額與數量加入合理上下限，避免溢位或負值。
 
 驗收：在每個 statement 人為注入失敗後，資料庫都不會留下孤兒公司、孤兒發票或部分轉換的價格。
 
@@ -99,7 +105,7 @@
 - [x] 密碼先維持現有最低長度檢查；暫不增加常見弱密碼規則。現有 PBKDF2 編碼字串已包含演算法與迭代次數，可供日後升級時辨識版本。
 - [x] session 加 `expires_at`、撤銷與定期清理；重設密碼時撤銷該使用者所有 session。
 - [x] 未知例外只回傳 request ID 與通用錯誤碼，完整 stack／D1 訊息只寫伺服器 log。
-- [ ] `ADMIN_TOKEN` 改成可輪替、可稽核的管理機制；至少使用獨立的 production／staging secret。
+- [x] `ADMIN_TOKEN` 改成可輪替、可稽核的管理機制；production 使用 `ADMIN_TOKEN_HASH`，staging 於正式上線前再評估。
 
 ---
 
@@ -112,7 +118,7 @@
 證據：`backend/src/index.ts:102-166`、`openvoKao/BackendClient.swift:117-230`
 
 - [x] 商品／分類／公司設定的寫入改用會員 session，device token 只保留 claim、讀取與回報列印任務。
-- [ ] 定義 owner／staff／printer 等角色與 route-level authorization test。
+- [x] 定義 owner／staff／printer 等角色與 route-level authorization test。
 - [x] 裝置新增、撤銷、改名與 token rotation 必須可管理並有 audit log。
 
 ### 8. 修正裝置身分碰撞
@@ -132,10 +138,10 @@ TypeScript generic 只在編譯期存在；`request.json()` 可傳入 `null`、a
 證據：`backend/src/index.ts:1520-1596`、`backend/src/index.ts:1772-1790`
 
 - [x] 每個 endpoint 使用共用 runtime schema 驗證 body、query 與 path parameter。
-- [ ] 統一限制 request body、字串、陣列與日期範圍大小。
+- [x] 統一限制 request body、字串、陣列與日期範圍大小。
 - [x] 非法 enum 回 400，不要默默改成「顯示／含稅／0」。
 - [x] `requirePositiveInteger` 分成允許 0 與必須大於 0；商品數量不可接受 0。
-- [ ] 統一錯誤格式：`code`、本地化 message、field errors、request ID。
+- [x] 統一錯誤格式：`code`、本地化 message、field errors、request ID。
 
 ### 10. 修正報表重複與擴展性問題
 
@@ -174,7 +180,7 @@ TypeScript generic 只在編譯期存在；`request.json()` 可傳入 `null`、a
 
 證據：`backend/src/index.ts:54-59`、`backend/src/index.ts:1792-1805`、`backend/src/index.ts:1816-1975`
 
-- [x] 若管理頁與 API 同源，移除不必要的 wildcard CORS；若另有前端，使用 production／staging allowlist。
+- [x] 若管理頁與 API 同源，移除不必要的 wildcard CORS；若另有前端，使用明確 allowlist。
 - [x] 加入 CSP、`X-Content-Type-Options`、`Referrer-Policy`、frame policy 與合理 cache policy。
 - [x] OPTIONS 只對允許的 route／origin 回應，並加入測試。
 
@@ -188,51 +194,51 @@ TypeScript generic 只在編譯期存在；`request.json()` 可傳入 `null`、a
 
 ## P2：維護性與效能
 
-### 15. 拆分 1,975 行 Worker 單檔
+### 15. 拆分大型 Worker 單檔
 
-- [ ] 依 `routes / auth / catalog / invoices / print-jobs / reports / db / validation / responses` 拆模組。
-- [ ] 將 inline admin HTML 移成獨立靜態資源或前端專案，避免 API、CSS、JS 全擠在 `index.ts`。
-- [ ] `Env` 改由 Wrangler config 產生型別，CI 檢查型別是否與 bindings 同步。
+- [ ] 依 `routes / auth / catalog / invoices / print-jobs / reports / db / validation / responses` 拆模組；已先拆出 `routes`、`catalog`、`print-jobs`、`reports`、`auth helpers`、`request parsers/normalizers`、`validation`、`responses/http`、`types`、`domain-types`、`constants` 與 admin page。
+- [x] 將 inline admin HTML 移成獨立檔案，避免 API、CSS、JS 全擠在 `index.ts`；正式前端專案可留待後續。
+- [x] `Env` 改由 Wrangler config 產生型別，CI 檢查型別是否與 bindings 同步。
 
 證據：`backend/src/index.ts`
 
 ### 16. 改善 iOS 狀態管理與請求併發
 
-- [ ] 不共用單一 `isSyncing`／`syncMessage` 表示所有功能，改為 queue、catalog、device、report 各自狀態或 operation counter。
-- [ ] `refreshCatalog()` 等兩個 request 全部成功後再一次提交畫面狀態，避免只更新一半。
-- [ ] 對重複刷新、日期變更與 view 消失支援 task cancellation／debounce。
-- [ ] 將 API machine error code 對應為可本地化訊息，不直接顯示底層英文錯誤。
+- [x] 不共用單一 `isSyncing`／`syncMessage` 表示所有功能，改為 queue、catalog、device、report 各自狀態或 operation counter。
+- [x] `refreshCatalog()` 等兩個 request 全部成功後再一次提交畫面狀態，避免只更新一半。
+- [x] 對重複刷新、日期變更與 view 消失支援 task cancellation／debounce。
+- [x] 將 API machine error code 對應為可本地化訊息，不直接顯示底層英文錯誤。
 
 證據：`openvoKao/AppStore.swift:34-35`、`openvoKao/AppStore.swift:97-122`、`openvoKao/ContentView.swift:151-159`
 
 ### 17. 清理 repository 與部署設定
 
-- [ ] 新增 `.gitignore`，移除已追蹤的 `.ipa`、`xcuserdata`、`.xcuserstate`、`.DS_Store`、DerivedData 與 Wrangler 本機 state。
-- [ ] binary artifact 改放 release／artifact storage，不要放 Git；目前已追蹤的 debug IPA 約 805 KiB。
-- [ ] 建立明確的 staging／production Worker environment、不同 D1 與不同 secrets，部署前跑 dry-run。
-- [ ] 評估將 `wrangler.toml` 遷移為有 schema 提示的 `wrangler.jsonc`，並固定／定期更新 Wrangler。
-- [ ] 補根目錄 README：架構、資料流、列印狀態機、開發／測試／部署命令、secret 處理方式。
+- [x] 新增 `.gitignore`，移除已追蹤的 `.ipa`、`xcuserdata`、`.xcuserstate`、`.DS_Store`、DerivedData 與 Wrangler 本機 state。
+- [x] binary artifact 改放 release／artifact storage，不要放 Git；目前已取消追蹤 debug IPA，CI 會上傳 unsigned simulator app artifact。
+- [x] 建立明確部署 dry-run；目前產品尚未正式上線，先用現有 D1 測試，不建立 staging D1，正式上線前再評估 staging／production 分離。
+- [x] 已將 `wrangler.toml` 遷移為有 schema 提示的 `wrangler.jsonc`，並以 package lock 固定目前 Wrangler 版本。
+- [x] 補根目錄 README：架構、資料流、列印狀態機、開發／測試／部署命令、secret 處理方式。
 
 ### 18. 同步文件與實際設定
 
-現有文件有多處已過期：`todo.md` 說 remote D1 ID 未填、Worker 未部署、登入未建立；實際 `wrangler.toml` 已有 database ID、app 有 production URL、後端已有註冊登入。Bundle ID 的文件與 project 也不一致。
+文件已同步現況：`wrangler.jsonc` 已有 database ID、app 有 production URL、後端已有註冊登入，Bundle ID 與 Team ID 也已和 Xcode project 統一。
 
-- [ ] 把 `todo.md` 改成只保留產品里程碑，完成狀態以現況重寫。
-- [ ] 更新 `backend/README.md` 的 limitations；目前已有 password hashing 與登入流程。
-- [ ] 確認並統一正式 Bundle ID、Team ID 與文件，避免續裝、簽章或 App Store 身分混亂。
+- [x] 把 `todo.md` 改成只保留產品里程碑，完成狀態以現況重寫。
+- [x] 更新 `backend/README.md` 的 limitations；目前已有 password hashing 與登入流程。
+- [x] 確認並統一正式 Bundle ID、Team ID 與文件，避免續裝、簽章或 App Store 身分混亂。
 
-證據：`todo.md`、`backend/README.md`、`backend/wrangler.toml`、`openvoKao.xcodeproj/project.pbxproj`
+證據：`todo.md`、`backend/README.md`、`backend/wrangler.jsonc`、`openvoKao.xcodeproj/project.pbxproj`
 
 ---
 
 ## 建議執行順序
 
-1. 先撤銷可能洩漏的 key，並把 token 移到 Keychain。
-2. 完成 BLE 序列佇列、完成 callback 與 renderer 修正。
-3. 完成後端 claim／lease、狀態機與 iOS outbox，實機做雙機競爭測試。
-4. 將註冊、發票、價格轉換改成原子操作並補 idempotency／constraints。
-5. 補 P0／P1 自動化測試後，再串正式 Amego 開票 API。
-6. 最後進行模組拆分、repo 清理、環境分離與文件同步。
+1. 先用目前實機流程做整套人工驗收：登入、解除綁定、商品同步、列印、失敗回報、離線重試。
+2. 確認舊 App Key 是否曾經是真實憑證；若是，先在供應商端撤銷或輪替。
+3. 用正式財政部測試資料驗證 QR code、條碼、期別、總額與統編。
+4. 再串正式 Amego 開票 API，並把 API key 僅保留在後端資料庫／secret 管理內。
+5. 產品正式上線前，再評估是否需要 staging／production D1 分離。
+6. 有餘裕時繼續拆 Worker 主檔，優先拆 `catalog / invoices / print-jobs / reports / db`。
 
 ## 完成標準
 

@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# iOS build outputs and archives
+build/
+*.ipa
+*.xcarchive
+
+# Swift Package Manager / Xcode build products
+.build/
+.swiftpm/
+
+# Node / Cloudflare local state
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+
+# Logs
+*.log

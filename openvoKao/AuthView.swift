@@ -28,12 +28,15 @@ struct AuthGatewayView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("裝置") {
-                    TextField("裝置名稱", text: $store.deviceProfile.deviceName)
-                    TextField("伺服器 URL", text: $store.deviceProfile.serverURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("嘉萱漢方有限公司製作")
+                            .font(.headline)
+                        Text("0800-000-783")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
 
                 if mode == .login {

@@ -56,6 +56,45 @@ final class BackendClientTests: XCTestCase {
         }
     }
 
+    func testServerErrorUsesLocalizedBackendMessage() async {
+        let session = StubBackendURLSession { request in
+            httpResponse(
+                statusCode: 409,
+                url: request.url,
+                body: #"{"error":"device_binding_locked","code":"device_binding_locked","message":"這個帳號已綁定其他手機，請輸入解除綁定碼後再登入。"}"#
+            )
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "token", urlSession: session)
+
+        do {
+            _ = try await client.fetchAuthMe()
+            XCTFail("Expected BackendError.server")
+        } catch BackendError.server(let statusCode, let message) {
+            XCTAssertEqual(statusCode, 409)
+            XCTAssertEqual(message, "這個帳號已綁定其他手機，請輸入解除綁定碼後再登入。")
+            XCTAssertEqual(errorDescription(for: BackendError.server(statusCode: statusCode, message: message)), "後台錯誤：這個帳號已綁定其他手機，請輸入解除綁定碼後再登入。")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testServerErrorLocalizesKnownCodeWhenMessageIsMissing() async {
+        let session = StubBackendURLSession { request in
+            httpResponse(statusCode: 409, url: request.url, body: #"{"error":"device_binding_locked"}"#)
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "token", urlSession: session)
+
+        do {
+            _ = try await client.fetchAuthMe()
+            XCTFail("Expected BackendError.server")
+        } catch BackendError.server(let statusCode, let message) {
+            XCTAssertEqual(statusCode, 409)
+            XCTAssertEqual(message, "這個帳號已綁定其他手機，請輸入解除綁定碼後再登入。")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testPendingPrintJobDecodesBackendDates() async throws {
         let session = StubBackendURLSession { request in
             httpResponse(
@@ -130,6 +169,10 @@ final class BackendClientTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+}
+
+private func errorDescription(for error: BackendError) -> String? {
+    error.errorDescription
 }
 
 private final class StubBackendURLSession: BackendURLSession {

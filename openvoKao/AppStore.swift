@@ -1,6 +1,13 @@
 import Combine
 import Foundation
 
+struct OperationStatus: Equatable {
+    var isSyncing: Bool
+    var message: String?
+
+    static let idle = OperationStatus(isSyncing: false, message: nil)
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     private static let authTokenKeychainKey = "authToken"
@@ -38,8 +45,10 @@ final class AppStore: ObservableObject {
         didSet { save(printReportOutbox, key: printReportOutboxKey) }
     }
 
-    @Published private(set) var isSyncing = false
-    @Published private(set) var syncMessage: String?
+    @Published private(set) var queueSyncStatus = OperationStatus.idle
+    @Published private(set) var catalogSyncStatus = OperationStatus.idle
+    @Published private(set) var deviceSyncStatus = OperationStatus.idle
+    @Published private(set) var reportSyncStatus = OperationStatus.idle
 
     private let printJobsKey = "printJobs"
     private let deviceProfileKey = "deviceProfile"
@@ -96,6 +105,20 @@ final class AppStore: ObservableObject {
         printJobs.filter { $0.status != .pending }
     }
 
+    var isSyncing: Bool {
+        queueSyncStatus.isSyncing ||
+            catalogSyncStatus.isSyncing ||
+            deviceSyncStatus.isSyncing ||
+            reportSyncStatus.isSyncing
+    }
+
+    var syncMessage: String? {
+        reportSyncStatus.message ??
+            queueSyncStatus.message ??
+            catalogSyncStatus.message ??
+            deviceSyncStatus.message
+    }
+
     func markPrinted(_ job: PrintJob) {
         updateJob(job) { current in
             current.status = .printed
@@ -117,9 +140,8 @@ final class AppStore: ObservableObject {
     }
 
     func refreshPendingJobs() async {
-        isSyncing = true
-        syncMessage = "同步中"
-        defer { isSyncing = false }
+        guard !queueSyncStatus.isSyncing else { return }
+        queueSyncStatus = OperationStatus(isSyncing: true, message: "同步中")
 
         do {
             await flushPrintReportOutbox()
@@ -127,37 +149,49 @@ final class AppStore: ObservableObject {
             mergeFetchedPrintJobs(jobs)
             deviceProfile.isBound = true
             let outboxSuffix = printReportOutbox.isEmpty ? "" : "，\(printReportOutbox.count) 筆回報待重試"
-            syncMessage = "已同步 \(jobs.count) 筆待列印\(outboxSuffix)"
+            queueSyncStatus = OperationStatus(isSyncing: false, message: "已同步 \(jobs.count) 筆待列印\(outboxSuffix)")
         } catch {
-            syncMessage = error.localizedDescription
+            if error is CancellationError {
+                queueSyncStatus = .idle
+                return
+            }
+            queueSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
     }
 
     func refreshCatalog() async {
-        isSyncing = true
-        syncMessage = "同步商品中"
-        defer { isSyncing = false }
+        guard !catalogSyncStatus.isSyncing else { return }
+        catalogSyncStatus = OperationStatus(isSyncing: true, message: "同步商品中")
 
         do {
             async let categories = backendClient.fetchCatalogCategories()
             async let productPayload = backendClient.fetchCatalogProducts()
-            catalogCategories = try await categories.sorted {
+            let fetchedCategories = try await categories
+            let fetchedProducts = try await productPayload
+
+            let sortedCategories = fetchedCategories.sorted {
                 if $0.sortOrder == $1.sortOrder {
                     return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                 }
                 return $0.sortOrder < $1.sortOrder
             }
-            let products = try await productPayload
-            catalogPriceDecimalPlaces = products.priceDecimalPlaces
-            catalogProducts = products.products.sorted {
+            let sortedProducts = fetchedProducts.products.sorted {
                 if $0.sortOrder == $1.sortOrder {
                     return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                 }
                 return $0.sortOrder < $1.sortOrder
             }
-            syncMessage = "已同步 \(catalogCategories.count) 個分類、\(catalogProducts.count) 個商品"
+
+            catalogCategories = sortedCategories
+            catalogPriceDecimalPlaces = fetchedProducts.priceDecimalPlaces
+            catalogProducts = sortedProducts
+            catalogSyncStatus = OperationStatus(isSyncing: false, message: "已同步 \(sortedCategories.count) 個分類、\(sortedProducts.count) 個商品")
         } catch {
-            syncMessage = error.localizedDescription
+            if error is CancellationError {
+                catalogSyncStatus = .idle
+                return
+            }
+            catalogSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
     }
 
@@ -231,9 +265,8 @@ final class AppStore: ObservableObject {
     }
 
     func verifyDeviceBinding() async {
-        isSyncing = true
-        syncMessage = "檢查綁定中"
-        defer { isSyncing = false }
+        guard !deviceSyncStatus.isSyncing else { return }
+        deviceSyncStatus = OperationStatus(isSyncing: true, message: "檢查綁定中")
 
         do {
             let device = try await backendClient.fetchDevice()
@@ -242,45 +275,51 @@ final class AppStore: ObservableObject {
             deviceProfile.backendDeviceId = device.id
             deviceProfile.companyName = device.companyName
             deviceProfile.lastVerifiedAt = Date()
-            syncMessage = "已綁定：\(device.companyName ?? device.name)"
+            deviceSyncStatus = OperationStatus(isSyncing: false, message: "已綁定：\(device.companyName ?? device.name)")
         } catch {
             deviceProfile.isBound = false
             deviceProfile.backendDeviceId = nil
             deviceProfile.companyName = nil
             deviceProfile.lastVerifiedAt = nil
-            syncMessage = error.localizedDescription
+            if error is CancellationError {
+                deviceSyncStatus = .idle
+                return
+            }
+            deviceSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
     }
 
     func markPrintedAndReport(_ job: PrintJob) async {
         markPrinted(job)
+        reportSyncStatus = OperationStatus(isSyncing: true, message: "回報送印結果中")
 
         do {
             try await backendClient.reportPrinted(remoteId: job.remoteId)
             removePrintReportOutboxItem(remoteId: job.remoteId, status: .printed)
-            syncMessage = "已回報送印完成：\(job.invoiceNumber)"
+            reportSyncStatus = OperationStatus(isSyncing: false, message: "已回報送印完成：\(job.invoiceNumber)")
         } catch {
             enqueuePrintReport(remoteId: job.remoteId, status: .printed, message: nil, lastError: error.localizedDescription)
             updateJob(job) { current in
                 current.lastMessage = "本機已列印，回報失敗：\(error.localizedDescription)"
             }
-            syncMessage = error.localizedDescription
+            reportSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
     }
 
     func markFailedAndReport(_ job: PrintJob, message: String) async {
         markFailed(job, message: message)
+        reportSyncStatus = OperationStatus(isSyncing: true, message: "回報列印失敗中")
 
         do {
             try await backendClient.reportFailed(remoteId: job.remoteId, message: message)
             removePrintReportOutboxItem(remoteId: job.remoteId, status: .failed)
-            syncMessage = "已回報列印失敗：\(job.invoiceNumber)"
+            reportSyncStatus = OperationStatus(isSyncing: false, message: "已回報列印失敗：\(job.invoiceNumber)")
         } catch {
             enqueuePrintReport(remoteId: job.remoteId, status: .failed, message: message, lastError: error.localizedDescription)
             updateJob(job) { current in
                 current.lastMessage = "列印失敗，回報也失敗：\(error.localizedDescription)"
             }
-            syncMessage = error.localizedDescription
+            reportSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
     }
 
@@ -343,7 +382,7 @@ final class AppStore: ObservableObject {
             if (error as? BackendError)?.isAuthenticationFailure == true {
                 logoutLocally()
             }
-            syncMessage = error.localizedDescription
+            deviceSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
     }
 
@@ -351,7 +390,7 @@ final class AppStore: ObservableObject {
         do {
             try await authClient.logoutAccount()
         } catch {
-            syncMessage = error.localizedDescription
+            deviceSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
         }
         logoutLocally()
     }
