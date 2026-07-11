@@ -196,7 +196,7 @@ TypeScript generic 只在編譯期存在；`request.json()` 可傳入 `null`、a
 
 ### 15. 拆分大型 Worker 單檔
 
-- [ ] 依 `routes / auth / catalog / invoices / print-jobs / reports / db / validation / responses` 拆模組；已先拆出 `routes`、`catalog`、`print-jobs`、`reports`、`auth helpers`、`request parsers/normalizers`、`validation`、`responses/http`、`types`、`domain-types`、`constants` 與 admin page。
+- [x] 依 `routes / auth / catalog / print-jobs / reports / devices / validation / responses` 拆模組；已拆出 `routes`、`catalog`、`print-jobs`、`reports`、`devices`、`crypto utils`、`auth helpers`、`request parsers/normalizers`、`validation`、`responses/http`、`types`、`domain-types`、`constants` 與 admin page。`index.ts` 已從 3310 行降到約 1173 行，先停在可維護範圍。
 - [x] 將 inline admin HTML 移成獨立檔案，避免 API、CSS、JS 全擠在 `index.ts`；正式前端專案可留待後續。
 - [x] `Env` 改由 Wrangler config 產生型別，CI 檢查型別是否與 bindings 同步。
 

@@ -1,5 +1,6 @@
 import { leaseExpiryTimestamp } from "./auth";
 import { MAX_INVOICE_ITEMS, MAX_ITEM_QUANTITY, MAX_MONEY_AMOUNT } from "./constants";
+import { sha256Hex } from "./crypto-utils";
 import type { DeviceSession, PrintJobPayload, PrintJobRow } from "./domain-types";
 import { HttpError, json } from "./http";
 import {
@@ -629,10 +630,4 @@ async function buildPrintJobIdempotencyKey(
     barcodePayload: input.barcodePayload
   });
   return `${input.companyId}:auto:${await sha256Hex(fingerprint)}`;
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

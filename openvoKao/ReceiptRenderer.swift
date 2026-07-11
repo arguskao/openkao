@@ -36,7 +36,7 @@ struct ReceiptRenderer {
         var data = Data()
         let periodText = invoicePeriodText(for: job.issuedAt)
         data.append(contentsOf: ESC.initialize)
-        data.append(contentsOf: ESC.selectBig5)
+        data.append(contentsOf: ESC.selectChineseCharacterMode)
         data.append(contentsOf: ESC.alignCenter)
         data.appendLine(job.sellerName ?? "電子發票證明聯")
         data.appendLine("電子發票證明聯")
@@ -80,7 +80,7 @@ struct ReceiptRenderer {
     }
 
     private func appendWrapped(_ text: String, to data: inout Data) {
-        let sanitized = text.receiptBig5SafeText
+        let sanitized = text.receiptGBKSafeText
         var current = ""
 
         for character in sanitized {
@@ -103,8 +103,8 @@ struct ReceiptRenderer {
     }
 
     private func twoColumn(_ left: String, _ right: String) -> String {
-        let safeLeft = left.receiptBig5SafeText
-        let safeRight = right.receiptBig5SafeText
+        let safeLeft = left.receiptGBKSafeText
+        let safeRight = right.receiptGBKSafeText
         let leftWidth = safeLeft.receiptWidth
         let rightWidth = safeRight.receiptWidth
         if leftWidth + 1 + rightWidth <= columns {
@@ -134,7 +134,7 @@ private enum ESC {
     static let alignCenter: [UInt8] = [0x1B, 0x61, 0x01]
     static let normalSize: [UInt8] = [0x1D, 0x21, 0x00]
     static let doubleSize: [UInt8] = [0x1D, 0x21, 0x11]
-    static let selectBig5: [UInt8] = [0x1C, 0x26]
+    static let selectChineseCharacterMode: [UInt8] = [0x1C, 0x26]
 
     static func feed(points: UInt8) -> [UInt8] {
         [0x1B, 0x4A, points]
@@ -148,8 +148,8 @@ private extension Data {
     }
 
     mutating func appendEncodedText(_ string: String) {
-        let safe = string.receiptBig5SafeText
-        if let data = safe.data(using: .big5) {
+        let safe = string.receiptGBKSafeText
+        if let data = ChinesePrinterEncoding.data(from: safe) {
             append(data)
             return
         }
@@ -188,9 +188,9 @@ private extension Data {
 }
 
 private extension String {
-    var receiptBig5SafeText: String {
+    var receiptGBKSafeText: String {
         map { character in
-            String(character).data(using: .big5) == nil ? "?" : String(character)
+            ChinesePrinterEncoding.canEncode(String(character)) ? String(character) : "?"
         }
         .joined()
     }
@@ -223,8 +223,17 @@ private extension Character {
     }
 }
 
-private extension String.Encoding {
-    static let big5 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.big5.rawValue)))
+private enum ChinesePrinterEncoding {
+    private static let encoding = CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+
+    static func data(from string: String) -> Data? {
+        CFStringCreateExternalRepresentation(nil, string as CFString, encoding, 0) as Data?
+    }
+
+    static func canEncode(_ string: String) -> Bool {
+        guard let data = data(from: string) else { return false }
+        return data.count <= 2
+    }
 }
 
 private extension DateFormatter {

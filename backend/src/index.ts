@@ -24,12 +24,30 @@ import {
   updateCatalogProduct,
   updateCatalogSettings
 } from "./catalog";
+import {
+  hashAdminToken,
+  hashAuthSessionToken,
+  hashDeviceToken,
+  hashPassword,
+  verifyPassword
+} from "./crypto-utils";
+import {
+  createManagedDevice,
+  ensureCompanyDevice,
+  fetchCompanyDeviceById,
+  fetchPrimaryCompanyDevice,
+  getDeviceMe,
+  listManagedDevices,
+  registerDevice,
+  revokeManagedDevice,
+  rotateManagedDeviceToken,
+  updateManagedDevice
+} from "./devices";
 import type {
   AdminUserRow,
   AuditLogRow,
   DeviceIdentity,
   DeviceSession,
-  ManagedDeviceRow,
   UserSession
 } from "./domain-types";
 import { buildErrorResponse, buildInternalErrorResponse, html, HttpError, json } from "./http";
@@ -48,16 +66,11 @@ import {
   generateUnbindCode,
   hasConfiguredAppKey,
   normalizeAuditLogLimit,
-  normalizeDeviceName,
-  normalizeDevicePlatform,
   normalizeInstallationId,
   normalizeOptionalBoundedString,
-  normalizeOptionalInstallationId,
   normalizeOptionalString,
   normalizeRequiredBoundedString,
   parseLoginAccountBody,
-  parseManagedDeviceBody,
-  parseManagedDeviceUpdateBody,
   parseOptionalJson,
   parsePositiveId,
   parseRegisterAccountBody,
@@ -124,7 +137,7 @@ export default {
       if (url.pathname === "/api/devices/register" && request.method === "POST") {
         await enforceRateLimit(request, env, "admin_devices_register", 30, 10 * 60);
         await requireAdmin(request, env, context);
-        return reply(await registerDevice(request, env, context));
+        return reply(await registerDevice(request, env, context, writeSystemAuditLog));
       }
 
       if (url.pathname === "/api/devices/me" && request.method === "GET") {
@@ -139,7 +152,7 @@ export default {
 
       if (url.pathname === "/api/devices" && request.method === "POST") {
         const session = await requireUserSession(request, env, context);
-        return reply(await createManagedDevice(request, env, session));
+        return reply(await createManagedDevice(request, env, session, writeAuditLog));
       }
 
       if (url.pathname === "/api/devices/audit-logs" && request.method === "GET") {
@@ -150,18 +163,18 @@ export default {
       const managedDeviceMatch = url.pathname.match(/^\/api\/devices\/([^/]+)$/);
       if (managedDeviceMatch && request.method === "PUT") {
         const session = await requireUserSession(request, env, context);
-        return reply(await updateManagedDevice(request, env, session, managedDeviceMatch[1]));
+        return reply(await updateManagedDevice(request, env, session, managedDeviceMatch[1], writeAuditLog));
       }
 
       if (managedDeviceMatch && request.method === "DELETE") {
         const session = await requireUserSession(request, env, context);
-        return reply(await revokeManagedDevice(env, session, managedDeviceMatch[1]));
+        return reply(await revokeManagedDevice(env, session, managedDeviceMatch[1], writeAuditLog));
       }
 
       const managedDeviceRotateMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/rotate-token$/);
       if (managedDeviceRotateMatch && request.method === "POST") {
         const session = await requireUserSession(request, env, context);
-        return reply(await rotateManagedDeviceToken(env, session, managedDeviceRotateMatch[1]));
+        return reply(await rotateManagedDeviceToken(env, session, managedDeviceRotateMatch[1], writeAuditLog));
       }
 
       if (url.pathname === "/api/print-jobs/pending" && request.method === "GET") {
@@ -584,237 +597,6 @@ async function logoutAccount(env: Env, session: UserSession): Promise<Response> 
   return json({ ok: true });
 }
 
-async function registerDevice(request: Request, env: Env, context: RequestContext): Promise<Response> {
-  const input = await readJson<{
-    companyId: number | string;
-    name: string;
-    platform?: string;
-  }>(request);
-
-  const companyId = parsePositiveId(input.companyId, "companyId");
-  context.companyId = companyId;
-  requireString(input.name, "name");
-
-  const id = crypto.randomUUID();
-  const token = generateSessionToken();
-  const tokenHash = await hashDeviceToken(token);
-
-  await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, name, token, token_hash, platform)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  )
-    .bind(id, companyId, input.name, issueDeviceTokenStorageValue(id), tokenHash, input.platform ?? "ios")
-    .run();
-
-  await writeSystemAuditLog(env, {
-    companyId,
-    actorDeviceId: id,
-    targetType: "device",
-    targetId: id,
-    action: "admin.device.register",
-    details: {
-      requestId: context.requestId,
-      name: input.name,
-      platform: input.platform ?? "ios"
-    }
-  });
-
-  return json({ id, token });
-}
-
-async function getDeviceMe(env: Env, device: DeviceSession): Promise<Response> {
-  const row = await env.DB.prepare(
-    `SELECT
-       d.id,
-       d.name,
-       d.platform,
-      d.company_id,
-      c.name AS company_name,
-       d.last_seen_at
-     FROM devices d
-     LEFT JOIN companies c ON c.id = d.company_id
-     WHERE d.id = ?`
-  )
-    .bind(device.id)
-    .first<{
-      id: string;
-      name: string;
-      platform: string;
-      company_id: number;
-      company_name: string | null;
-      last_seen_at: string | null;
-    }>();
-
-  if (!row) {
-    throw new HttpError(404, "device_not_found");
-  }
-
-  return json({
-    id: row.id,
-    name: row.name,
-    platform: row.platform,
-    companyId: row.company_id,
-    companyName: row.company_name,
-    lastSeenAt: row.last_seen_at,
-    isBound: true
-  });
-}
-
-async function listManagedDevices(env: Env, session: UserSession): Promise<Response> {
-  requireOwnerAccess(session);
-
-  const result = await env.DB.prepare(
-    `SELECT
-       id,
-       company_id,
-       name,
-       platform,
-       installation_id,
-       last_seen_at,
-       created_at,
-       updated_at
-     FROM devices
-     WHERE company_id = ?
-     ORDER BY created_at ASC`
-  )
-    .bind(session.company_id)
-    .all<ManagedDeviceRow>();
-
-  return json({
-    devices: result.results.map(mapManagedDeviceRow)
-  });
-}
-
-async function createManagedDevice(request: Request, env: Env, session: UserSession): Promise<Response> {
-  requireOwnerAccess(session);
-  const input = parseManagedDeviceBody(await readJson<Record<string, unknown>>(request));
-
-  const name = normalizeDeviceName(input.name);
-  const platform = normalizeDevicePlatform(input.platform);
-  const installationId = normalizeOptionalInstallationId(input.installationId);
-  const id = crypto.randomUUID();
-  const token = generateSessionToken();
-  const tokenHash = await hashDeviceToken(token);
-
-  await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(id, session.company_id, name, issueDeviceTokenStorageValue(id), tokenHash, platform, installationId)
-    .run();
-
-  const device = await fetchManagedDeviceById(env, session.company_id, id);
-  await writeAuditLog(env, session, "device", id, "device.create", {
-    name,
-    platform,
-    installationId
-  });
-
-  return json({
-    device,
-    token
-  }, 201);
-}
-
-async function updateManagedDevice(
-  request: Request,
-  env: Env,
-  session: UserSession,
-  deviceIdValue: string
-): Promise<Response> {
-  requireOwnerAccess(session);
-
-  const device = await fetchManagedDeviceById(env, session.company_id, deviceIdValue);
-  const input = parseManagedDeviceUpdateBody(await readJson<Record<string, unknown>>(request));
-
-  const name = input.name == null ? device.name : normalizeDeviceName(input.name);
-  const platform = input.platform == null ? device.platform : normalizeDevicePlatform(input.platform);
-
-  await env.DB.prepare(
-    `UPDATE devices
-     SET name = ?, platform = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?
-       AND company_id = ?`
-  )
-    .bind(name, platform, device.id, session.company_id)
-    .run();
-
-  await writeAuditLog(env, session, "device", device.id, "device.update", {
-    previousName: device.name,
-    nextName: name,
-    previousPlatform: device.platform,
-    nextPlatform: platform
-  });
-
-  return json({
-    device: await fetchManagedDeviceById(env, session.company_id, device.id)
-  });
-}
-
-async function rotateManagedDeviceToken(
-  env: Env,
-  session: UserSession,
-  deviceIdValue: string
-): Promise<Response> {
-  requireOwnerAccess(session);
-
-  const device = await fetchManagedDeviceById(env, session.company_id, deviceIdValue);
-  const token = generateSessionToken();
-  const tokenHash = await hashDeviceToken(token);
-
-  await env.DB.prepare(
-    `UPDATE devices
-     SET token = ?, token_hash = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?
-       AND company_id = ?`
-  )
-    .bind(issueDeviceTokenStorageValue(device.id), tokenHash, device.id, session.company_id)
-    .run();
-
-  await writeAuditLog(env, session, "device", device.id, "device.rotate_token", {
-    name: device.name,
-    platform: device.platform
-  });
-
-  return json({
-    device: await fetchManagedDeviceById(env, session.company_id, device.id),
-    token
-  });
-}
-
-async function revokeManagedDevice(
-  env: Env,
-  session: UserSession,
-  deviceIdValue: string
-): Promise<Response> {
-  requireOwnerAccess(session);
-
-  const device = await fetchManagedDeviceById(env, session.company_id, deviceIdValue);
-
-  await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE auth_sessions
-       SET revoked_at = CURRENT_TIMESTAMP
-       WHERE company_id = ?
-         AND device_id = ?
-         AND revoked_at IS NULL`
-    ).bind(session.company_id, device.id),
-    env.DB.prepare(
-      `DELETE FROM devices
-       WHERE id = ?
-         AND company_id = ?`
-    ).bind(device.id, session.company_id)
-  ]);
-
-  await writeAuditLog(env, session, "device", device.id, "device.revoke", {
-    name: device.name,
-    platform: device.platform,
-    installationId: device.installation_id
-  });
-
-  return json({ ok: true, deviceId: device.id });
-}
-
 async function listAuditLogs(env: Env, session: UserSession, url: URL): Promise<Response> {
   requireOwnerAccess(session);
 
@@ -1220,44 +1002,6 @@ async function enforceRateLimit(
   }
 }
 
-function mapManagedDeviceRow(row: ManagedDeviceRow) {
-  return {
-    id: row.id,
-    companyId: row.company_id,
-    name: row.name,
-    platform: row.platform,
-    installationId: row.installation_id,
-    lastSeenAt: row.last_seen_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
-}
-
-async function fetchManagedDeviceById(env: Env, companyId: number, deviceId: string): Promise<ManagedDeviceRow> {
-  const row = await env.DB.prepare(
-    `SELECT
-       id,
-       company_id,
-       name,
-       platform,
-       installation_id,
-       last_seen_at,
-       created_at,
-       updated_at
-     FROM devices
-     WHERE id = ?
-       AND company_id = ?`
-  )
-    .bind(deviceId, companyId)
-    .first<ManagedDeviceRow>();
-
-  if (!row) {
-    throw new HttpError(404, "device_not_found");
-  }
-
-  return row;
-}
-
 async function createAuthSession(env: Env, userId: number, companyId: number, deviceId: string | null): Promise<string> {
   const token = generateSessionToken();
   const tokenHash = await hashAuthSessionToken(token);
@@ -1412,235 +1156,6 @@ function sanitizeAuditValue(key: string, value: unknown): unknown {
     return "[object]";
   }
   return value;
-}
-
-async function hashDeviceToken(token: string): Promise<string> {
-  return sha256Hex(`device:${token}`);
-}
-
-async function hashAuthSessionToken(token: string): Promise<string> {
-  return sha256Hex(`auth:${token}`);
-}
-
-async function hashAdminToken(token: string): Promise<string> {
-  return sha256Hex(`admin:${token}`);
-}
-
-async function hashPassword(password: string): Promise<string> {
-  const iterations = 100_000;
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const hash = await derivePasswordHash(password, salt, iterations);
-  return `pbkdf2_sha256$${iterations}$${toBase64(salt)}$${toBase64(hash)}`;
-}
-
-async function verifyPassword(password: string, encoded: string): Promise<boolean> {
-  const [algorithm, iterationsValue, saltValue, hashValue] = encoded.split("$");
-  if (algorithm !== "pbkdf2_sha256" || !iterationsValue || !saltValue || !hashValue) {
-    return false;
-  }
-
-  const iterations = Number(iterationsValue);
-  if (!Number.isInteger(iterations) || iterations <= 0) {
-    return false;
-  }
-
-  const derived = await derivePasswordHash(password, fromBase64(saltValue), iterations);
-  return timingSafeEqual(derived, fromBase64(hashValue));
-}
-
-async function derivePasswordHash(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveBits"]
-  );
-
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      salt,
-      iterations
-    },
-    keyMaterial,
-    256
-  );
-
-  return new Uint8Array(bits);
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function toBase64(value: Uint8Array): string {
-  let output = "";
-  for (const byte of value) {
-    output += String.fromCharCode(byte);
-  }
-  return btoa(output);
-}
-
-function fromBase64(value: string): Uint8Array {
-  const decoded = atob(value);
-  const output = new Uint8Array(decoded.length);
-  for (let index = 0; index < decoded.length; index += 1) {
-    output[index] = decoded.charCodeAt(index);
-  }
-  return output;
-}
-
-function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  let mismatch = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    mismatch |= left[index] ^ right[index];
-  }
-  return mismatch === 0;
-}
-
-async function ensureCompanyDevice(
-  env: Env,
-  companyId: number,
-  deviceName: string,
-  platform: string,
-  installationId: string,
-  unbindCode?: string | null,
-  expectedUnbindCode?: string | null
-) {
-  const existing = await env.DB.prepare(
-    `SELECT d.id, d.name
-     FROM devices d
-     WHERE d.company_id = ?
-       AND d.installation_id = ?
-     ORDER BY d.created_at ASC
-     LIMIT 1`
-  )
-    .bind(companyId, installationId)
-    .first<{
-      id: string;
-      name: string;
-    }>();
-
-  if (existing) {
-    const token = generateSessionToken();
-    const tokenHash = await hashDeviceToken(token);
-    await env.DB.prepare(
-      `UPDATE devices
-       SET token = ?, token_hash = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`
-    )
-      .bind(issueDeviceTokenStorageValue(existing.id), tokenHash, existing.id)
-      .run();
-
-    return {
-      id: existing.id,
-      name: existing.name,
-      token
-    };
-  }
-
-  const existingCompanyDevice = await fetchPrimaryCompanyDevice(env, companyId, false);
-  if (existingCompanyDevice) {
-    const companyUnbindCode = expectedUnbindCode ?? await fetchCompanyUnbindCode(env, companyId);
-    if (!companyUnbindCode || unbindCode?.trim() !== companyUnbindCode) {
-      throw new HttpError(409, "device_binding_locked");
-    }
-
-    await releaseCompanyDevices(env, companyId);
-  }
-
-  const id = crypto.randomUUID();
-  const token = generateSessionToken();
-  const tokenHash = await hashDeviceToken(token);
-  await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(id, companyId, deviceName, issueDeviceTokenStorageValue(id), tokenHash, platform, installationId)
-    .run();
-
-  return {
-    id,
-    token,
-    name: deviceName
-  };
-}
-
-async function fetchPrimaryCompanyDevice(env: Env, companyId: number, createIfMissing = true) {
-  const device = await env.DB.prepare(
-    `SELECT d.id, d.name
-     FROM devices d
-     WHERE d.company_id = ?
-     ORDER BY d.created_at ASC
-     LIMIT 1`
-  )
-    .bind(companyId)
-    .first<{
-      id: string;
-      name: string;
-    }>();
-
-  if (device) {
-    return {
-      id: device.id,
-      name: device.name
-    };
-  }
-
-  if (!createIfMissing) {
-    return null;
-  }
-
-  return ensureCompanyDevice(env, companyId, "iPhone", "ios", `server-generated-${crypto.randomUUID()}`);
-}
-
-async function fetchCompanyDeviceById(env: Env, companyId: number, deviceId: string) {
-  return env.DB.prepare(
-    `SELECT id, name
-     FROM devices
-     WHERE company_id = ?
-       AND id = ?`
-  )
-    .bind(companyId, deviceId)
-    .first<{
-      id: string;
-      name: string;
-    }>();
-}
-
-async function fetchCompanyUnbindCode(env: Env, companyId: number): Promise<string | null> {
-  const row = await env.DB.prepare(
-    `SELECT unbind_code
-     FROM companies
-     WHERE id = ?`
-  )
-    .bind(companyId)
-    .first<{ unbind_code: string | null }>();
-
-  return row?.unbind_code?.trim() || null;
-}
-
-async function releaseCompanyDevices(env: Env, companyId: number): Promise<void> {
-  await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE auth_sessions
-       SET revoked_at = CURRENT_TIMESTAMP
-       WHERE company_id = ?
-         AND revoked_at IS NULL`
-    ).bind(companyId),
-    env.DB.prepare(
-      `DELETE FROM devices
-       WHERE company_id = ?`
-    ).bind(companyId)
-  ]);
 }
 
 function jsonAuthPayload(payload: {

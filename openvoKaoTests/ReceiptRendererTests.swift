@@ -4,26 +4,25 @@ import XCTest
 final class ReceiptRendererTests: XCTestCase {
     func testRocPeriodAmountsAndLineItems() throws {
         let data = ReceiptRenderer(paperWidth: .mm58).render(job: makeJob())
-        let text = try XCTUnwrap(String(data: data, encoding: .big5ForTests))
 
-        XCTAssertTrue(text.contains("115年07-08月"))
-        XCTAssertTrue(text.contains("AB12345678"))
-        XCTAssertTrue(text.contains("總計 135"))
-        XCTAssertTrue(text.contains("2 x 45"))
-        XCTAssertTrue(text.contains("90"))
+        XCTAssertTrue(data.containsGBKText("115年07-08月"))
+        XCTAssertTrue(data.containsGBKText("AB12345678"))
+        XCTAssertTrue(data.containsGBKText("總計 135"))
+        XCTAssertTrue(data.containsGBKText("2 x 45"))
+        XCTAssertTrue(data.containsGBKText("90"))
     }
 
-    func testBig5FallbackReplacesUnsupportedCharacters() throws {
+    func testGBKFallbackReplacesUnsupportedCharacters() throws {
         var job = makeJob()
         job.items = [
             PrintJobItem(id: UUID(), name: "奶茶😀", quantity: 1, unitPrice: 45)
         ]
         job.totalAmount = 45
 
-        let text = try XCTUnwrap(String(data: ReceiptRenderer().render(job: job), encoding: .big5ForTests))
+        let data = ReceiptRenderer().render(job: job)
 
-        XCTAssertTrue(text.contains("奶茶?"))
-        XCTAssertFalse(text.contains("😀"))
+        XCTAssertTrue(data.containsGBKText("奶茶?"))
+        XCTAssertFalse(data.containsBytes(Array("😀".utf8)))
     }
 
     func testLongItemNameWrapsWithinReceiptWidth() throws {
@@ -33,14 +32,14 @@ final class ReceiptRendererTests: XCTestCase {
         ]
         job.totalAmount = 100
 
-        let text = try XCTUnwrap(String(data: ReceiptRenderer(paperWidth: .mm58).render(job: job), encoding: .big5ForTests))
-        let wrappedLines = text
-            .split(separator: "\n")
-            .map(String.init)
-            .filter { $0.contains("超長商品") }
+        let data = ReceiptRenderer(paperWidth: .mm58).render(job: job)
+        let productNameBytes = try XCTUnwrap(GBKTestEncoding.data(from: "超長商品"))
+        let wrappedLines = data
+            .escposTextLinesForTests
+            .filter { $0.containsBytes(productNameBytes) }
 
         XCTAssertGreaterThan(wrappedLines.count, 1)
-        XCTAssertTrue(wrappedLines.allSatisfy { $0.receiptDisplayWidthForTests <= ReceiptPaperWidth.mm58.textColumns })
+        XCTAssertTrue(wrappedLines.allSatisfy { $0.gbkReceiptDisplayWidthForTests <= ReceiptPaperWidth.mm58.textColumns })
     }
 
     func testQrAndBarcodeByteFixture() {
@@ -77,26 +76,101 @@ final class ReceiptRendererTests: XCTestCase {
 
 private extension Data {
     func containsBytes(_ needle: [UInt8]) -> Bool {
-        guard !needle.isEmpty, count >= needle.count else { return false }
-        return withUnsafeBytes { haystackBuffer in
-            let haystack = Array(haystackBuffer)
-            return haystack.indices.dropLast(needle.count - 1).contains { index in
-                Array(haystack[index..<index + needle.count]) == needle
+        Array(self).containsBytes(needle)
+    }
+
+    func containsGBKText(_ text: String) -> Bool {
+        guard let bytes = GBKTestEncoding.data(from: text) else { return false }
+        return containsBytes(bytes)
+    }
+
+    var escposTextLinesForTests: [[UInt8]] {
+        stripEscPosCommandsForTests()
+            .split(separator: 0x0A)
+            .map(Array.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private func stripEscPosCommandsForTests() -> [UInt8] {
+        let bytes = Array(self)
+        var output: [UInt8] = []
+        var index = 0
+
+        while index < bytes.count {
+            switch bytes[index] {
+            case 0x1B:
+                guard index + 1 < bytes.count else { index += 1; continue }
+                switch bytes[index + 1] {
+                case 0x40:
+                    index += 2
+                case 0x4A, 0x61:
+                    index += 3
+                default:
+                    index += 2
+                }
+            case 0x1C:
+                if index + 1 < bytes.count, bytes[index + 1] == 0x26 {
+                    index += 2
+                } else {
+                    index += 1
+                }
+            case 0x1D:
+                guard index + 1 < bytes.count else { index += 1; continue }
+                switch bytes[index + 1] {
+                case 0x21, 0x48, 0x68, 0x77:
+                    index += 3
+                case 0x28 where index + 4 < bytes.count && bytes[index + 2] == 0x6B:
+                    let length = Int(bytes[index + 3]) + Int(bytes[index + 4]) * 256
+                    index += Swift.min(bytes.count - index, 5 + length)
+                case 0x6B where index + 3 < bytes.count && bytes[index + 2] == 0x49:
+                    let length = Int(bytes[index + 3])
+                    index += Swift.min(bytes.count - index, 4 + length)
+                default:
+                    index += 2
+                }
+            default:
+                output.append(bytes[index])
+                index += 1
             }
         }
+
+        return output
     }
 }
 
-private extension String {
-    var receiptDisplayWidthForTests: Int {
-        reduce(0) { width, character in
-            width + (character.unicodeScalars.allSatisfy(\.isASCII) ? 1 : 2)
+private extension Array where Element == UInt8 {
+    func containsBytes(_ needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty, count >= needle.count else { return false }
+        return indices.dropLast(needle.count - 1).contains { index in
+            Array(self[index..<index + needle.count]) == needle
         }
     }
+
+    var gbkReceiptDisplayWidthForTests: Int {
+        var width = 0
+        var index = 0
+
+        while index < count {
+            if self[index] < 0x80 {
+                width += 1
+                index += 1
+            } else {
+                width += 2
+                index += 2
+            }
+        }
+
+        return width
+    }
 }
 
-private extension String.Encoding {
-    static let big5ForTests = String.Encoding(
-        rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.big5.rawValue))
-    )
+private enum GBKTestEncoding {
+    private static let encoding = CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+
+    static func data(from string: String) -> [UInt8]? {
+        guard let data = CFStringCreateExternalRepresentation(nil, string as CFString, encoding, 0) as Data? else {
+            return nil
+        }
+        return Array(data)
+    }
 }
