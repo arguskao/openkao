@@ -232,8 +232,8 @@ final class PrinterManager: NSObject, ObservableObject {
                 let chunk = currentPrintChunks[currentPrintChunkIndex]
                 peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
                 currentPrintChunkIndex += 1
-                if currentPrintChunkIndex.isMultiple(of: 8) {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                if currentPrintChunkIndex.isMultiple(of: 4) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
                         self.pumpWriteQueue()
                     }
                     return

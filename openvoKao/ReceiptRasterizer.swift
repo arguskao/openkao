@@ -42,6 +42,12 @@ struct ESCPosRasterImage {
             }
         }
     }
+
+    func isBlack(x: Int, y: Int) -> Bool {
+        guard x >= 0, y >= 0, x < width, y < height else { return false }
+        let bytesPerRow = (width + 7) / 8
+        return bytes[y * bytesPerRow + x / 8] & UInt8(0x80 >> (x % 8)) != 0
+    }
 }
 
 enum ReceiptRasterizer {

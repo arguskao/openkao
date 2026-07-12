@@ -26,16 +26,20 @@ final class ReceiptRendererTests: XCTestCase {
 
         XCTAssertTrue(data.containsBytes([
             0x1B, 0x45, 0x01,
-            0x1D, 0x21, 0x10
+            0x1D, 0x21, 0x10,
+            0x1C, 0x21, 0x08
         ]))
         XCTAssertTrue(data.containsBytes([
-            0x1D, 0x21, 0x10
+            0x1D, 0x21, 0x10,
+            0x1C, 0x21, 0x08
         ] + (GBKTestEncoding.data(from: "電子發票證明聯") ?? [])))
         XCTAssertTrue(data.containsBytes([
-            0x1D, 0x21, 0x11
+            0x1D, 0x21, 0x11,
+            0x1C, 0x21, 0x0C
         ] + Array("AB-12345678".utf8)))
         XCTAssertTrue(data.containsBytes([
             0x1D, 0x21, 0x00,
+            0x1C, 0x21, 0x00,
             0x1B, 0x45, 0x00
         ]))
     }
@@ -84,36 +88,42 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertTrue(wrappedLines.allSatisfy { $0.gbkReceiptDisplayWidthForTests <= ReceiptLayout.textColumns })
     }
 
-    func testDualQrAndBarcodeUseFixedRasterCommands() throws {
+    func testDualQrUsesCompatibleBitImageStripesAndBarcodeUsesRaster() throws {
         let data = try ReceiptRenderer().render(job: makeJob())
         let images = data.rasterImagesForTests
 
-        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(images.count, 1)
         XCTAssertEqual(images[0].widthBytes, 48)
         XCTAssertEqual(images[0].height, 88)
-        XCTAssertEqual(images[1].widthBytes, 48)
-        XCTAssertEqual(images[1].height, 184)
         XCTAssertGreaterThanOrEqual(images[0].minimumBlackRunWidth, 2)
+        XCTAssertTrue(data.containsBytes([0x1B, 0x33, 0x18]))
+        XCTAssertTrue(data.containsBytes([0x1B, 0x2A, 0x21, 0x80, 0x01]))
+        XCTAssertTrue(data.containsBytes([0x1B, 0x32]))
         XCTAssertFalse(data.containsBytes([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41]))
         XCTAssertFalse(data.containsBytes([0x1D, 0x6B, 0x49]))
         XCTAssertFalse(data.containsBytes(Array("11508AB123456781234".utf8)))
     }
 
-    func testDualQrRasterContainsBothSymbols() throws {
-        let data = try ReceiptRenderer().render(job: makeJob())
-        let qrImage = try XCTUnwrap(data.rasterImagesForTests.dropFirst().first)
-        let halfWidthBytes = qrImage.widthBytes / 2
-        var leftBlackBytes = 0
-        var rightBlackBytes = 0
+    func testDualQrCompositeContainsBothSymbols() throws {
+        let qrImage = try ReceiptRasterizer.dualQRCode(
+            leftPayload: makeJob().leftQRCodePayload!,
+            rightPayload: makeJob().rightQRCodePayload!
+        )
+        let halfWidth = qrImage.width / 2
+        var leftBlackDots = 0
+        var rightBlackDots = 0
 
-        for row in 0..<qrImage.height {
-            let rowStart = row * qrImage.widthBytes
-            leftBlackBytes += qrImage.data[rowStart..<rowStart + halfWidthBytes].filter { $0 != 0 }.count
-            rightBlackBytes += qrImage.data[rowStart + halfWidthBytes..<rowStart + qrImage.widthBytes].filter { $0 != 0 }.count
+        for y in 0..<qrImage.height {
+            for x in 0..<halfWidth where qrImage.isBlack(x: x, y: y) {
+                leftBlackDots += 1
+            }
+            for x in halfWidth..<qrImage.width where qrImage.isBlack(x: x, y: y) {
+                rightBlackDots += 1
+            }
         }
 
-        XCTAssertGreaterThan(leftBlackBytes, 0)
-        XCTAssertGreaterThan(rightBlackBytes, 0)
+        XCTAssertGreaterThan(leftBlackDots, 0)
+        XCTAssertGreaterThan(rightBlackDots, 0)
     }
 
     func testLegacySingleQrRemainsCompatible() throws {

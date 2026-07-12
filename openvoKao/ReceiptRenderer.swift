@@ -44,7 +44,7 @@ struct ReceiptRenderer {
         case let (left?, right?) where !left.isEmpty && !right.isEmpty:
             data.appendLine("")
             data.append(contentsOf: ESC.alignCenter)
-            data.appendRasterImage(try ReceiptRasterizer.dualQRCode(
+            data.appendBitImage(try ReceiptRasterizer.dualQRCode(
                 leftPayload: left,
                 rightPayload: right
             ))
@@ -222,9 +222,18 @@ private enum ESC {
     static let initialize: [UInt8] = [0x1B, 0x40]
     static let alignLeft: [UInt8] = [0x1B, 0x61, 0x00]
     static let alignCenter: [UInt8] = [0x1B, 0x61, 0x01]
-    static let normalSize: [UInt8] = [0x1D, 0x21, 0x00]
-    static let doubleHeight: [UInt8] = [0x1D, 0x21, 0x10]
-    static let doubleSize: [UInt8] = [0x1D, 0x21, 0x11]
+    static let normalSize: [UInt8] = [
+        0x1D, 0x21, 0x00,
+        0x1C, 0x21, 0x00
+    ]
+    static let doubleHeight: [UInt8] = [
+        0x1D, 0x21, 0x10,
+        0x1C, 0x21, 0x08
+    ]
+    static let doubleSize: [UInt8] = [
+        0x1D, 0x21, 0x11,
+        0x1C, 0x21, 0x0C
+    ]
     static let emphasisOn: [UInt8] = [0x1B, 0x45, 0x01]
     static let emphasisOff: [UInt8] = [0x1B, 0x45, 0x00]
     static let selectChineseCharacterMode: [UInt8] = [0x1C, 0x26]
@@ -279,6 +288,35 @@ private extension Data {
         ])
         append(contentsOf: image.bytes)
         append(0x0A)
+    }
+
+    mutating func appendBitImage(_ image: ESCPosRasterImage) {
+        let stripeHeight = 24
+        guard image.width > 0, image.width <= 65535, image.height > 0 else { return }
+
+        append(contentsOf: [0x1B, 0x33, UInt8(stripeHeight)])
+        for stripeY in stride(from: 0, to: image.height, by: stripeHeight) {
+            append(contentsOf: [
+                0x1B, 0x2A, 0x21,
+                UInt8(image.width & 0xFF),
+                UInt8((image.width >> 8) & 0xFF)
+            ])
+
+            for x in 0..<image.width {
+                for byteOffset in 0..<3 {
+                    var verticalByte: UInt8 = 0
+                    for bit in 0..<8 {
+                        let y = stripeY + byteOffset * 8 + bit
+                        if y < image.height, image.isBlack(x: x, y: y) {
+                            verticalByte |= UInt8(0x80 >> bit)
+                        }
+                    }
+                    append(verticalByte)
+                }
+            }
+            append(0x0A)
+        }
+        append(contentsOf: [0x1B, 0x32])
     }
 }
 
