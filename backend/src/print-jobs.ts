@@ -382,12 +382,41 @@ export async function createPrintJob(
   const buyerIdentifier = normalizeOptionalCompanyIdentifier(input.buyerIdentifier, "buyerIdentifier");
   const sellerName = normalizeOptionalBoundedString(input.sellerName, 100);
   const qrCodePayload = normalizeOptionalBoundedString(input.qrCodePayload, 4096);
+  const leftQRCodePayload = normalizeOptionalBoundedString(input.leftQRCodePayload, 4096);
+  const rightQRCodePayload = normalizeOptionalBoundedString(input.rightQRCodePayload, 4096);
   const barcodePayload = normalizeOptionalBoundedString(input.barcodePayload, 64);
+  if ((leftQRCodePayload == null) !== (rightQRCodePayload == null)) {
+    throw new HttpError(400, "qr_payload_pair_required");
+  }
   requireIntegerRange(input.totalAmount, "totalAmount", { min: 0, max: MAX_MONEY_AMOUNT });
   requireArray(input.items, "items", { min: 1, max: MAX_INVOICE_ITEMS });
 
   const invoiceId = crypto.randomUUID();
   const issuedAt = normalizeIssuedAt(input.issuedAt);
+
+  const items = input.items.map((item) => {
+    const name = normalizeRequiredBoundedString(item.name, "item.name", 100);
+    requireIntegerRange(item.quantity, "item.quantity", { min: 1, max: MAX_ITEM_QUANTITY });
+    requireIntegerRange(item.unitPrice, "item.unitPrice", { min: 0, max: MAX_MONEY_AMOUNT });
+    const amount = item.quantity * item.unitPrice;
+    requireIntegerRange(amount, "item.amount", { min: 0, max: MAX_MONEY_AMOUNT });
+    return {
+      id: crypto.randomUUID(),
+      name,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      amount
+    };
+  });
+
+  const calculatedTotalAmount = items.reduce((sum, item) => sum + item.amount, 0);
+  requireIntegerRange(calculatedTotalAmount, "totalAmount", { min: 0, max: MAX_MONEY_AMOUNT });
+  if (calculatedTotalAmount !== input.totalAmount) {
+    throw new HttpError(400, "total_amount_mismatch");
+  }
+
+  const resolvedBarcodePayload = barcodePayload ?? invoiceNumber;
+
   const idempotencyKey = await buildPrintJobIdempotencyKey(request, {
     companyId,
     inputKey: input.idempotencyKey,
@@ -397,9 +426,15 @@ export async function createPrintJob(
     sellerIdentifier,
     buyerIdentifier,
     totalAmount: input.totalAmount,
-    items: input.items,
+    salesAmount: input.salesAmount,
+    taxAmount: input.taxAmount,
+    invoiceFormatCode: input.invoiceFormatCode,
+    isReprint: input.isReprint,
+    items,
     qrCodePayload,
-    barcodePayload: barcodePayload ?? invoiceNumber
+    leftQRCodePayload,
+    rightQRCodePayload,
+    barcodePayload: resolvedBarcodePayload
   });
 
   const existingJob = await findExistingPrintJobByIdempotencyKey(env, companyId, idempotencyKey);
@@ -431,27 +466,6 @@ export async function createPrintJob(
 
   const normalizedDeviceId = await validateDeviceOwnership(env, companyId, input.deviceId ?? null);
 
-  const items = input.items.map((item) => {
-    const name = normalizeRequiredBoundedString(item.name, "item.name", 100);
-    requireIntegerRange(item.quantity, "item.quantity", { min: 1, max: MAX_ITEM_QUANTITY });
-    requireIntegerRange(item.unitPrice, "item.unitPrice", { min: 0, max: MAX_MONEY_AMOUNT });
-    const amount = item.quantity * item.unitPrice;
-    requireIntegerRange(amount, "item.amount", { min: 0, max: MAX_MONEY_AMOUNT });
-    return {
-      id: crypto.randomUUID(),
-      name,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      amount
-    };
-  });
-
-  const calculatedTotalAmount = items.reduce((sum, item) => sum + item.amount, 0);
-  requireIntegerRange(calculatedTotalAmount, "totalAmount", { min: 0, max: MAX_MONEY_AMOUNT });
-  if (calculatedTotalAmount !== input.totalAmount) {
-    throw new HttpError(400, "total_amount_mismatch");
-  }
-
   const jobId = crypto.randomUUID();
   const payload: PrintJobPayload = {
     remoteId: jobId,
@@ -462,9 +476,15 @@ export async function createPrintJob(
     sellerIdentifier,
     buyerIdentifier: buyerIdentifier ?? undefined,
     totalAmount: input.totalAmount,
+    salesAmount: input.salesAmount,
+    taxAmount: input.taxAmount,
+    invoiceFormatCode: input.invoiceFormatCode,
+    isReprint: input.isReprint,
     items: items.map(({ id, name, quantity, unitPrice }) => ({ id, name, quantity, unitPrice })),
     qrCodePayload: qrCodePayload ?? undefined,
-    barcodePayload: barcodePayload ?? invoiceNumber
+    leftQRCodePayload: leftQRCodePayload ?? undefined,
+    rightQRCodePayload: rightQRCodePayload ?? undefined,
+    barcodePayload: resolvedBarcodePayload
   };
 
   try {
@@ -599,8 +619,14 @@ async function buildPrintJobIdempotencyKey(
     sellerIdentifier: string;
     buyerIdentifier: string | null;
     totalAmount: number;
+    salesAmount?: number;
+    taxAmount?: number;
+    invoiceFormatCode?: string;
+    isReprint?: boolean;
     items: Array<{ name: string; quantity: number; unitPrice: number }>;
     qrCodePayload: string | null;
+    leftQRCodePayload: string | null;
+    rightQRCodePayload: string | null;
     barcodePayload: string;
   }
 ): Promise<string> {
@@ -621,12 +647,18 @@ async function buildPrintJobIdempotencyKey(
     sellerIdentifier: input.sellerIdentifier,
     buyerIdentifier: input.buyerIdentifier,
     totalAmount: input.totalAmount,
+    salesAmount: input.salesAmount,
+    taxAmount: input.taxAmount,
+    invoiceFormatCode: input.invoiceFormatCode,
+    isReprint: input.isReprint,
     items: input.items.map((item) => ({
       name: typeof item.name === "string" ? item.name.trim() : item.name,
       quantity: item.quantity,
       unitPrice: item.unitPrice
     })),
     qrCodePayload: input.qrCodePayload,
+    leftQRCodePayload: input.leftQRCodePayload,
+    rightQRCodePayload: input.rightQRCodePayload,
     barcodePayload: input.barcodePayload
   });
   return `${input.companyId}:auto:${await sha256Hex(fingerprint)}`;

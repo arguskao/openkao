@@ -256,6 +256,45 @@ struct BackendClient {
         return response
     }
 
+    func fetchInvoices(date: Date) async throws -> [ManagedInvoice] {
+        let value = DateFormatter.reportQuery.string(from: date)
+        let response: ManagedInvoicesResponse = try await request(
+            path: "/api/invoices?date=\(value)",
+            method: "GET",
+            authorization: .auth
+        )
+        return response.invoices
+    }
+
+    func refreshInvoice(id: String) async throws -> ManagedInvoice {
+        let response: ManagedInvoiceResponse = try await request(
+            path: "/api/invoices/\(id)/refresh",
+            method: "POST",
+            authorization: .auth,
+            body: EmptyRequest()
+        )
+        return response.invoice
+    }
+
+    func requestInvoiceReprint(id: String) async throws -> String {
+        let response: InvoiceReprintResponse = try await request(
+            path: "/api/invoices/\(id)/reprint",
+            method: "POST",
+            authorization: .auth,
+            body: EmptyRequest()
+        )
+        return response.printJobId
+    }
+
+    func voidInvoice(id: String) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/invoices/\(id)/void",
+            method: "POST",
+            authorization: .auth,
+            body: EmptyRequest()
+        )
+    }
+
     private func request<ResponseBody: Decodable>(
         path: String,
         method: String,
@@ -396,8 +435,14 @@ private struct RemotePrintJobPayload: Decodable {
     let sellerIdentifier: String?
     let buyerIdentifier: String?
     let totalAmount: Int
+    let salesAmount: Int?
+    let taxAmount: Int?
+    let invoiceFormatCode: String?
+    let isReprint: Bool?
     let items: [RemotePrintJobItem]
     let qrCodePayload: String?
+    let leftQRCodePayload: String?
+    let rightQRCodePayload: String?
     let barcodePayload: String?
 
     func printJob(remoteId: String, status: String) -> PrintJob {
@@ -411,8 +456,14 @@ private struct RemotePrintJobPayload: Decodable {
             sellerIdentifier: sellerIdentifier,
             buyerIdentifier: buyerIdentifier,
             totalAmount: totalAmount,
+            salesAmount: salesAmount,
+            taxAmount: taxAmount,
+            invoiceFormatCode: invoiceFormatCode,
+            isReprint: isReprint,
             items: items.map { $0.printJobItem() },
             qrCodePayload: qrCodePayload,
+            leftQRCodePayload: leftQRCodePayload,
+            rightQRCodePayload: rightQRCodePayload,
             barcodePayload: barcodePayload,
             status: status == "printing" ? .printing : .pending,
             lastMessage: nil
@@ -534,6 +585,18 @@ private struct CatalogProductUpsertRequest: Encodable {
 
 private struct CatalogSettingsUpdateRequest: Encodable {
     let priceDecimalPlaces: Int
+}
+
+private struct ManagedInvoicesResponse: Decodable {
+    let invoices: [ManagedInvoice]
+}
+
+private struct ManagedInvoiceResponse: Decodable {
+    let invoice: ManagedInvoice
+}
+
+private struct InvoiceReprintResponse: Decodable {
+    let printJobId: String
 }
 
 private struct CatalogSettingsResponse: Decodable {
@@ -663,7 +726,7 @@ private extension ISO8601DateFormatter {
     }()
 }
 
-private extension DateFormatter {
+extension DateFormatter {
     static let reportQuery: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

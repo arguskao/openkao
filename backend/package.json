@@ -10,7 +10,7 @@
     "wrangler:check": "wrangler deploy --env production --dry-run",
     "types:wrangler": "wrangler types src/worker-configuration.d.ts",
     "types:wrangler:check": "wrangler types src/worker-configuration.d.ts --check",
-    "test": "tsx --test tests/worker.integration.test.ts",
+    "test": "tsx --test tests/amego.test.ts tests/worker.integration.test.ts",
     "test:migrations": "tsx --test tests/migrations.test.ts",
     "typecheck": "tsc --noEmit",
     "d1:migrate:local": "wrangler d1 migrations apply openvokao-db --local",
@@ -23,5 +23,8 @@
     "tsx": "^4.23.0",
     "typescript": "^5.8.3",
     "wrangler": "^4.107.1"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.2.0"
   }
 }

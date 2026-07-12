@@ -19,12 +19,10 @@ final class PrinterManager: NSObject, ObservableObject {
     @Published private(set) var connectedPrinterId: String?
     @Published private(set) var savedPrinterName: String?
     @Published private(set) var savedPrinterId: String?
-    @Published var paperWidth: ReceiptPaperWidth
     @Published var statusMessage: String?
 
     private let savedPrinterIdKey = "savedPrinterId"
     private let savedPrinterNameKey = "savedPrinterName"
-    private let paperWidthKey = "receiptPaperWidth"
     private let printerServiceUUID = CBUUID(string: "49535343-FE7D-4AE5-8FA9-9FAFD205E455")
     private let printerCharacteristicUUID = CBUUID(string: "49535343-8841-43F4-A8D4-ECBE34729BB3")
     private var centralManager: CBCentralManager!
@@ -44,7 +42,6 @@ final class PrinterManager: NSObject, ObservableObject {
     }
 
     override init() {
-        paperWidth = UserDefaults.standard.string(forKey: paperWidthKey) == "mm80" ? .mm80 : .mm58
         super.init()
         savedPrinterId = UserDefaults.standard.string(forKey: savedPrinterIdKey)
         savedPrinterName = UserDefaults.standard.string(forKey: savedPrinterNameKey)
@@ -129,12 +126,6 @@ final class PrinterManager: NSObject, ObservableObject {
         statusMessage = "已清除印表機設定"
     }
 
-    func updatePaperWidth(_ value: ReceiptPaperWidth) {
-        paperWidth = value
-        UserDefaults.standard.set(value == .mm80 ? "mm80" : "mm58", forKey: paperWidthKey)
-        statusMessage = "紙寬已切換為 \(value.title)"
-    }
-
     func testPrint() {
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -154,7 +145,7 @@ final class PrinterManager: NSObject, ObservableObject {
     }
 
     func print(_ job: PrintJob) async throws {
-        let data = ReceiptRenderer(paperWidth: paperWidth).render(job: job)
+        let data = try ReceiptRenderer().render(job: job)
         try await send(data, label: job.invoiceNumber)
     }
 

@@ -115,9 +115,15 @@ final class BackendClientTests: XCTestCase {
                       "sellerIdentifier": "12345678",
                       "buyerIdentifier": null,
                       "totalAmount": 45,
+                      "salesAmount": 45,
+                      "taxAmount": 0,
+                      "invoiceFormatCode": null,
+                      "isReprint": true,
                       "items": [{"id":"item-1","name":"奶茶","quantity":1,"unitPrice":45}],
                       "qrCodePayload": null,
-                      "barcodePayload": "AB12345678"
+                      "leftQRCodePayload": "AMEGO-LEFT",
+                      "rightQRCodePayload": "**AMEGO-RIGHT",
+                      "barcodePayload": "11508AB123456781234"
                     }
                   }]
                 }
@@ -130,6 +136,62 @@ final class BackendClientTests: XCTestCase {
 
         XCTAssertEqual(jobs.first?.remoteId, "job-1")
         XCTAssertEqual(jobs.first?.issuedAt, ISO8601DateFormatter().date(from: "2026-07-09T13:59:00Z"))
+        XCTAssertEqual(jobs.first?.leftQRCodePayload, "AMEGO-LEFT")
+        XCTAssertEqual(jobs.first?.rightQRCodePayload, "**AMEGO-RIGHT")
+        XCTAssertEqual(jobs.first?.barcodePayload, "11508AB123456781234")
+        XCTAssertEqual(jobs.first?.salesAmount, 45)
+        XCTAssertEqual(jobs.first?.taxAmount, 0)
+        XCTAssertNil(jobs.first?.invoiceFormatCode)
+        XCTAssertEqual(jobs.first?.isReprint, true)
+    }
+
+    func testInvoiceManagementDecodesD1StatusesAndDetails() async throws {
+        let session = StubBackendURLSession { request in
+            XCTAssertEqual(request.url?.path, "/api/invoices")
+            XCTAssertEqual(request.url?.query, "date=2026-07-12")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer auth-token")
+            return httpResponse(
+                statusCode: 200,
+                url: request.url,
+                body: """
+                {
+                  "invoices": [
+                    {
+                      "id": "issuance-1",
+                      "orderId": "ORDER-1",
+                      "invoiceNumber": null,
+                      "status": "issuing",
+                      "issuedAt": "2026-07-12 10:00:00",
+                      "totalAmount": 0,
+                      "items": []
+                    },
+                    {
+                      "id": "invoice-1",
+                      "orderId": "ORDER-2",
+                      "invoiceNumber": "AB12345678",
+                      "status": "print_failed",
+                      "issuedAt": "2026-07-12T10:10:00Z",
+                      "randomNumber": "1234",
+                      "sellerName": "測試公司",
+                      "sellerIdentifier": "12345678",
+                      "buyerIdentifier": null,
+                      "totalAmount": 45,
+                      "voidedAt": null,
+                      "items": [{"id":"item-1","name":"奶茶","quantity":1,"unitPrice":45,"amount":45}]
+                    }
+                  ]
+                }
+                """
+            )
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "auth-token", urlSession: session)
+        let date = try XCTUnwrap(DateFormatter.reportQuery.date(from: "2026-07-12"))
+
+        let invoices = try await client.fetchInvoices(date: date)
+
+        XCTAssertEqual(invoices.map(\.status), [.issuing, .printFailed])
+        XCTAssertEqual(invoices[0].displayNumber, "ORDER-1")
+        XCTAssertEqual(invoices[1].items.first?.name, "奶茶")
     }
 
     func testCancellationPropagates() async {

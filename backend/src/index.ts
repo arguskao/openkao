@@ -51,6 +51,14 @@ import type {
   UserSession
 } from "./domain-types";
 import { buildErrorResponse, buildInternalErrorResponse, html, HttpError, json } from "./http";
+import { createAmegoInvoice } from "./invoice-issuance";
+import {
+  getInvoice,
+  listInvoices,
+  refreshInvoice,
+  reprintInvoice,
+  voidInvoice
+} from "./invoice-management";
 import {
   adminListPrintJobs,
   adminReleasePrintJob,
@@ -132,6 +140,44 @@ export default {
       if (url.pathname === "/api/reports/sales" && request.method === "GET") {
         const session = await requireUserSession(request, env, context);
         return reply(await listSalesReport(env, session, url));
+      }
+
+      if (url.pathname === "/api/invoices" && request.method === "POST") {
+        await enforceRateLimit(request, env, "invoice_issue", 30, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await createAmegoInvoice(request, env, session, context, writeAuditLog));
+      }
+
+      if (url.pathname === "/api/invoices" && request.method === "GET") {
+        const session = await requireUserSession(request, env, context);
+        return reply(await listInvoices(env, session, url));
+      }
+
+      const invoiceMatch = url.pathname.match(/^\/api\/invoices\/([^/]+)$/);
+      if (invoiceMatch && request.method === "GET") {
+        const session = await requireUserSession(request, env, context);
+        return reply(await getInvoice(env, session, invoiceMatch[1]));
+      }
+
+      const invoiceRefreshMatch = url.pathname.match(/^\/api\/invoices\/([^/]+)\/refresh$/);
+      if (invoiceRefreshMatch && request.method === "POST") {
+        await enforceRateLimit(request, env, "invoice_refresh", 30, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await refreshInvoice(env, session, invoiceRefreshMatch[1], writeAuditLog));
+      }
+
+      const invoiceReprintMatch = url.pathname.match(/^\/api\/invoices\/([^/]+)\/reprint$/);
+      if (invoiceReprintMatch && request.method === "POST") {
+        await enforceRateLimit(request, env, "invoice_reprint", 30, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await reprintInvoice(env, session, invoiceReprintMatch[1], writeAuditLog));
+      }
+
+      const invoiceVoidMatch = url.pathname.match(/^\/api\/invoices\/([^/]+)\/void$/);
+      if (invoiceVoidMatch && request.method === "POST") {
+        await enforceRateLimit(request, env, "invoice_void", 10, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await voidInvoice(env, session, invoiceVoidMatch[1], writeAuditLog));
       }
 
       if (url.pathname === "/api/devices/register" && request.method === "POST") {

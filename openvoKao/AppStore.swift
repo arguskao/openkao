@@ -49,6 +49,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var catalogSyncStatus = OperationStatus.idle
     @Published private(set) var deviceSyncStatus = OperationStatus.idle
     @Published private(set) var reportSyncStatus = OperationStatus.idle
+    @Published private(set) var invoiceSyncStatus = OperationStatus.idle
 
     private let printJobsKey = "printJobs"
     private let deviceProfileKey = "deviceProfile"
@@ -406,6 +407,31 @@ final class AppStore: ObservableObject {
 
     func fetchSalesReport(startDate: Date, endDate: Date, cursor: String? = nil) async throws -> SalesReportPayload {
         try await authClient.fetchSalesReport(startDate: startDate, endDate: endDate, cursor: cursor)
+    }
+
+    func fetchInvoices(date: Date) async throws -> [ManagedInvoice] {
+        invoiceSyncStatus = OperationStatus(isSyncing: true, message: "同步發票中")
+        do {
+            let invoices = try await authClient.fetchInvoices(date: date)
+            invoiceSyncStatus = OperationStatus(isSyncing: false, message: "已同步 \(invoices.count) 筆發票")
+            return invoices
+        } catch {
+            invoiceSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    func refreshInvoice(id: String) async throws -> ManagedInvoice {
+        try await authClient.refreshInvoice(id: id)
+    }
+
+    func requestInvoiceReprint(id: String) async throws {
+        _ = try await authClient.requestInvoiceReprint(id: id)
+        await refreshPendingJobs()
+    }
+
+    func voidInvoice(id: String) async throws {
+        try await authClient.voidInvoice(id: id)
     }
 
     private var backendClient: BackendClient {

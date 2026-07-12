@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "invoice_number": "AB12345678",
+  "invoice_date": "20260712",
+  "invoice_time": "15:30:00",
+  "random_number": "1234",
+  "barcode": "11508AB123456781234",
+  "qrcode_left": "MASKED-AMEGO-LEFT-PAYLOAD",
+  "qrcode_right": "**MASKED-AMEGO-RIGHT-PAYLOAD",
+  "base64_data": "MASKED-PRINTER-BYTES"
+}

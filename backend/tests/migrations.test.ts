@@ -14,6 +14,13 @@ test("D1 migrations apply to an empty database", async () => {
   assert.equal(tableExists(d1.rawDatabase, "stores"), false);
   assert.equal(tableExists(d1.rawDatabase, "audit_logs"), true);
   assert.equal(tableExists(d1.rawDatabase, "request_rate_limits"), true);
+  assert.equal(tableExists(d1.rawDatabase, "invoice_issuances"), true);
+  assert.equal(columnExists(d1.rawDatabase, "invoices", "qrcode_left"), true);
+  assert.equal(columnExists(d1.rawDatabase, "invoices", "qrcode_right"), true);
+  assert.equal(columnExists(d1.rawDatabase, "invoices", "barcode_payload"), true);
+  assert.equal(columnExists(d1.rawDatabase, "invoices", "voided_at"), true);
+  assert.equal(columnExists(d1.rawDatabase, "invoices", "amego_void_response_json"), true);
+  assert.equal(columnExists(d1.rawDatabase, "companies", "amego_printer_lang"), true);
   assert.equal(foreignKeyIssueCount(d1.rawDatabase), 0);
   assert.equal(rowCount(d1.rawDatabase, "companies"), 0);
   assert.equal(rowCount(d1.rawDatabase, "print_jobs"), 0);
@@ -42,6 +49,11 @@ test("D1 old schema upgrade keeps row counts, foreign keys, and key queries vali
   assert.equal(rowCount(db, "print_jobs"), 1);
   assert.equal(rowCount(db, "print_logs"), 1);
   assert.equal(foreignKeyIssueCount(db), 0);
+
+  const migratedInvoice = firstRow<{ status: string }>(db, "SELECT status FROM invoices LIMIT 1");
+  assert.equal(migratedInvoice.status, "issued");
+  const migratedCompany = firstRow<{ amego_printer_lang: number }>(db, "SELECT amego_printer_lang FROM companies LIMIT 1");
+  assert.equal(migratedCompany.amego_printer_lang, 2);
 
   const product = firstRow<{ company_id: number; category_id: number; price_decimal_places: number }>(
     db,
@@ -115,9 +127,60 @@ test("D1 integrity guards reject invalid business data", async () => {
   assert.throws(
     () => db.run(`
       INSERT INTO print_jobs (id, company_id, invoice_id, status, payload_json, attempt_count)
-      VALUES ('job-guard', 1, 'invoice-guard', 'unknown', '{}', 0)
+      VALUES (
+        'job-guard', 1, 'invoice-guard', 'unknown',
+        '{"invoiceNumber":"AB12345678"}', 0
+      )
     `),
     /print_jobs_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO invoice_issuances (
+        id, company_id, order_id, idempotency_key, request_hash, status, request_json
+      )
+      VALUES ('issuance-guard', 1, 'ORDER-1', 'KEY-1', 'short', 'issuing', '{}')
+    `),
+    /invoice_issuances_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`UPDATE companies SET amego_printer_lang = 4 WHERE id = 1`),
+    /companies_amego_printer_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO invoices (
+        id, company_id, invoice_number, random_number, issued_at,
+        seller_identifier, total_amount, amego_order_id
+      )
+      VALUES (
+        'invoice-missing-payload', 1, 'CD12345678', '5678',
+        '2026-07-12T10:00:00Z', '12345678', 45, 'ORDER-MISSING'
+      )
+    `),
+    /invoices_amego_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO print_jobs (id, company_id, invoice_id, status, payload_json)
+      VALUES (
+        'job-wrong-invoice', 1, 'invoice-guard', 'pending',
+        '{"invoiceNumber":"ZZ99999999"}'
+      )
+    `),
+    /print_jobs_invoice_payload_mismatch/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO print_jobs (id, company_id, invoice_id, status, payload_json)
+      VALUES ('job-invalid-json', 1, 'invoice-guard', 'pending', 'not-json')
+    `),
+    /print_jobs_payload_json_invalid/
   );
 });
 
@@ -180,6 +243,21 @@ function tableExists(db: Database, tableName: string): boolean {
     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
     [tableName]
   ) === 1;
+}
+
+function columnExists(db: Database, tableName: string, columnName: string): boolean {
+  const statement = db.prepare(`PRAGMA table_info(${tableName})`);
+  try {
+    while (statement.step()) {
+      const row = statement.getAsObject() as { name?: string };
+      if (row.name === columnName) {
+        return true;
+      }
+    }
+    return false;
+  } finally {
+    statement.free();
+  }
 }
 
 function rowCount(db: Database, tableName: string): number {

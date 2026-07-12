@@ -7,6 +7,10 @@ export type PrintJobPayload = {
   sellerIdentifier?: string;
   buyerIdentifier?: string;
   totalAmount: number;
+  salesAmount?: number;
+  taxAmount?: number;
+  invoiceFormatCode?: string;
+  isReprint?: boolean;
   items: Array<{
     id: string;
     name: string;
@@ -14,6 +18,8 @@ export type PrintJobPayload = {
     unitPrice: number;
   }>;
   qrCodePayload?: string;
+  leftQRCodePayload?: string;
+  rightQRCodePayload?: string;
   barcodePayload?: string;
 };
 

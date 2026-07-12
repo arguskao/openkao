@@ -346,6 +346,12 @@ export function parseCatalogProductBody(body: Record<string, unknown>) {
 
 export function parseCreatePrintJobBody(body: Record<string, unknown>) {
   requireIntegerRange(body.totalAmount, "totalAmount", { min: 0, max: MAX_MONEY_AMOUNT });
+  if (body.salesAmount != null) {
+    requireIntegerRange(body.salesAmount, "salesAmount", { min: 0, max: MAX_MONEY_AMOUNT });
+  }
+  if (body.taxAmount != null) {
+    requireIntegerRange(body.taxAmount, "taxAmount", { min: 0, max: MAX_MONEY_AMOUNT });
+  }
   requireArray(body.items, "items", { min: 1, max: MAX_INVOICE_ITEMS });
 
   return {
@@ -359,8 +365,14 @@ export function parseCreatePrintJobBody(body: Record<string, unknown>) {
     sellerIdentifier: normalizeRequiredBoundedString(body.sellerIdentifier, "sellerIdentifier", 8),
     buyerIdentifier: normalizeOptionalBoundedString(body.buyerIdentifier, 8) ?? undefined,
     totalAmount: body.totalAmount,
+    salesAmount: body.salesAmount as number | undefined,
+    taxAmount: body.taxAmount as number | undefined,
+    invoiceFormatCode: normalizeOptionalBoundedString(body.invoiceFormatCode, 2) ?? undefined,
+    isReprint: body.isReprint === true,
     items: body.items as Array<{ name: string; quantity: number; unitPrice: number }>,
     qrCodePayload: normalizeOptionalBoundedString(body.qrCodePayload, 4096) ?? undefined,
+    leftQRCodePayload: normalizeOptionalBoundedString(body.leftQRCodePayload, 4096) ?? undefined,
+    rightQRCodePayload: normalizeOptionalBoundedString(body.rightQRCodePayload, 4096) ?? undefined,
     barcodePayload: normalizeOptionalBoundedString(body.barcodePayload, 64) ?? undefined
   };
 }

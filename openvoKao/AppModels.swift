@@ -10,8 +10,14 @@ struct PrintJob: Identifiable, Codable, Equatable {
     var sellerIdentifier: String?
     var buyerIdentifier: String?
     var totalAmount: Int
+    var salesAmount: Int?
+    var taxAmount: Int?
+    var invoiceFormatCode: String?
+    var isReprint: Bool?
     var items: [PrintJobItem]
     var qrCodePayload: String?
+    var leftQRCodePayload: String?
+    var rightQRCodePayload: String?
     var barcodePayload: String?
     var status: PrintJobStatus
     var lastMessage: String?
@@ -126,6 +132,50 @@ struct SalesReportPayload: Codable, Equatable {
     var report: SalesReportSummary
     var invoices: [SalesInvoice]
     var nextCursor: String?
+}
+
+struct ManagedInvoice: Identifiable, Codable, Equatable {
+    var id: String
+    var orderId: String?
+    var invoiceNumber: String?
+    var status: ManagedInvoiceStatus
+    var issuedAt: Date
+    var invoiceDate: String?
+    var invoiceTime: String?
+    var randomNumber: String?
+    var sellerName: String?
+    var sellerIdentifier: String?
+    var buyerIdentifier: String?
+    var carrierType: String?
+    var carrierId: String?
+    var npoban: String?
+    var totalAmount: Int
+    var voidedAt: Date?
+    var items: [SalesInvoiceItem]
+
+    var displayNumber: String {
+        invoiceNumber ?? orderId ?? id
+    }
+}
+
+enum ManagedInvoiceStatus: String, Codable, CaseIterable {
+    case issuing
+    case issued
+    case printPending = "print_pending"
+    case printed
+    case printFailed = "print_failed"
+    case voided
+
+    var title: String {
+        switch self {
+        case .issuing: return "開立中"
+        case .issued: return "已開立"
+        case .printPending: return "待列印"
+        case .printed: return "已列印"
+        case .printFailed: return "列印失敗"
+        case .voided: return "已作廢"
+        }
+    }
 }
 
 struct DeviceProfile: Codable, Equatable {

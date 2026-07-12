@@ -108,8 +108,16 @@ test("Worker integration: claim race, status transition, idempotency, invalid pa
     201
   );
 
-  const createBody = printJobBody(tenant.company.id, "AB12345678", "job-key-1");
-  const firstCreate = await apiJson<{ id: string; invoiceId: string }>(
+  const createBody = {
+    ...printJobBody(tenant.company.id, "AB12345678", "job-key-1"),
+    leftQRCodePayload: "AMEGO-LEFT-PAYLOAD",
+    rightQRCodePayload: "AMEGO-RIGHT-PAYLOAD"
+  };
+  const firstCreate = await apiJson<{
+    id: string;
+    invoiceId: string;
+    payload: { leftQRCodePayload: string; rightQRCodePayload: string };
+  }>(
     env,
     "/api/admin/print-jobs",
     { method: "POST", token: "admin-token", body: createBody },
@@ -123,6 +131,8 @@ test("Worker integration: claim race, status transition, idempotency, invalid pa
   );
   assert.equal(duplicateCreate.id, firstCreate.id);
   assert.equal(duplicateCreate.invoiceId, firstCreate.invoiceId);
+  assert.equal(firstCreate.payload.leftQRCodePayload, "AMEGO-LEFT-PAYLOAD");
+  assert.equal(firstCreate.payload.rightQRCodePayload, "AMEGO-RIGHT-PAYLOAD");
 
   const firstClaim = await apiJson<{ jobs: Array<{ id: string; status: string; claimedBy: string }> }>(
     env,
@@ -179,6 +189,17 @@ test("Worker integration: claim race, status transition, idempotency, invalid pa
     }
   });
   assert.equal(invalidAmount.status, 400);
+
+  const unpairedQrPayload = await api(env, "/api/admin/print-jobs", {
+    method: "POST",
+    token: "admin-token",
+    body: {
+      ...printJobBody(tenant.company.id, "AB12345676", "unpaired-qr-key"),
+      leftQRCodePayload: "AMEGO-LEFT-ONLY"
+    }
+  });
+  assert.equal(unpairedQrPayload.status, 400);
+  assert.equal((await unpairedQrPayload.json() as { code: string }).code, "qr_payload_pair_required");
 
   const secondCreate = await apiJson<{ id: string }>(
     env,
@@ -430,6 +451,505 @@ test("Worker integration: admin hash secret and role authorization", async () =>
   assert.equal(devicePending.status, 200);
 });
 
+test("Worker integration: Amego issuance stores official payload once and creates a print job", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantinvoice", "24681357");
+  await env.DB.prepare(
+    `UPDATE companies SET amego_app_key = 'test-app-key' WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const originalFetch = globalThis.fetch;
+  let amegoCallCount = 0;
+  let postedInvoiceData: Record<string, unknown> | null = null;
+  globalThis.fetch = async (_input, init) => {
+    amegoCallCount += 1;
+    const form = new URLSearchParams(String(init?.body));
+    postedInvoiceData = JSON.parse(form.get("data") ?? "{}") as Record<string, unknown>;
+    assert.equal(form.get("invoice"), "24681357");
+    assert.match(form.get("sign") ?? "", /^[0-9a-f]{32}$/);
+    return Response.json({
+      code: 0,
+      invoice_number: "CD12345678",
+      invoice_date: "20260712",
+      invoice_time: 1783800000,
+      random_number: "5678",
+      barcode: "11508CD123456785678",
+      qrcode_left: "AMEGO-OFFICIAL-LEFT",
+      qrcode_right: "**AMEGO-OFFICIAL-RIGHT",
+      base64_data: "must-not-be-stored"
+    });
+  };
+
+  try {
+    const requestBody = amegoInvoiceBody("ORDER-20260712-001");
+    const created = await apiJson<{
+      status: string;
+      invoiceId: string;
+      invoiceNumber: string;
+      printJobId: string;
+    }>(
+      env,
+      "/api/invoices",
+      { method: "POST", authToken: tenant.authToken, body: requestBody },
+      201
+    );
+    assert.equal(created.status, "issued");
+    assert.equal(created.invoiceNumber, "CD12345678");
+    assert.ok(created.printJobId);
+    assert.equal((postedInvoiceData as Record<string, unknown>).OrderId, "ORDER-20260712-001");
+    assert.equal((postedInvoiceData as Record<string, unknown>).BuyerIdentifier, "0000000000");
+
+    const replayed = await apiJson<{ invoiceId: string; printJobId: string }>(
+      env,
+      "/api/invoices",
+      { method: "POST", authToken: tenant.authToken, body: requestBody },
+      200
+    );
+    assert.equal(replayed.invoiceId, created.invoiceId);
+    assert.equal(replayed.printJobId, created.printJobId);
+    assert.equal(amegoCallCount, 1);
+
+    const conflictingReplay = await api(env, "/api/invoices", {
+      method: "POST",
+      authToken: tenant.authToken,
+      body: {
+        ...requestBody,
+        totalAmount: 50,
+        items: [{ name: "奶茶", quantity: 1, unitPrice: 50 }]
+      }
+    });
+    assert.equal(conflictingReplay.status, 409);
+    assert.equal((await conflictingReplay.json() as { code: string }).code, "invoice_idempotency_conflict");
+    assert.equal(amegoCallCount, 1);
+
+    const stored = await env.DB.prepare(
+      `SELECT status, amego_order_id, barcode_payload, qrcode_left, qrcode_right,
+              sales_amount, tax_amount, amego_response_json
+       FROM invoices
+       WHERE id = ?`
+    ).bind(created.invoiceId).first<{
+      status: string;
+      amego_order_id: string;
+      barcode_payload: string;
+      qrcode_left: string;
+      qrcode_right: string;
+      sales_amount: number;
+      tax_amount: number;
+      amego_response_json: string;
+    }>();
+    assert.equal(stored?.status, "issued");
+    assert.equal(stored?.amego_order_id, "ORDER-20260712-001");
+    assert.equal(stored?.barcode_payload, "11508CD123456785678");
+    assert.equal(stored?.qrcode_left, "AMEGO-OFFICIAL-LEFT");
+    assert.equal(stored?.qrcode_right, "**AMEGO-OFFICIAL-RIGHT");
+    assert.equal(stored?.sales_amount, 45);
+    assert.equal(stored?.tax_amount, 0);
+    assert.equal(stored?.amego_response_json.includes("must-not-be-stored"), false);
+
+    const job = await env.DB.prepare(
+      `SELECT payload_json FROM print_jobs WHERE id = ?`
+    ).bind(created.printJobId).first<{ payload_json: string }>();
+    const payload = JSON.parse(job?.payload_json ?? "{}") as Record<string, unknown> & {
+      leftQRCodePayload?: string;
+      rightQRCodePayload?: string;
+      barcodePayload?: string;
+      salesAmount?: number;
+      taxAmount?: number;
+      invoiceFormatCode?: string;
+    };
+    assert.equal(payload.leftQRCodePayload, "AMEGO-OFFICIAL-LEFT");
+    assert.equal(payload.rightQRCodePayload, "**AMEGO-OFFICIAL-RIGHT");
+    assert.equal(payload.barcodePayload, "11508CD123456785678");
+    assert.equal(payload.salesAmount, 45);
+    assert.equal(payload.taxAmount, 0);
+    assert.equal(payload.invoiceFormatCode, undefined);
+    assert.equal("base64_data" in payload, false);
+    assert.equal("base64Data" in payload, false);
+
+    const claimed = await apiJson<{ jobs: Array<{ id: string }> }>(
+      env,
+      "/api/print-jobs/pending",
+      { token: tenant.device.token }
+    );
+    assert.equal(claimed.jobs[0].id, created.printJobId);
+    await apiJson(
+      env,
+      `/api/print-jobs/${created.printJobId}/failed`,
+      { method: "POST", token: tenant.device.token, body: { message: "printer offline" } }
+    );
+    const replayAfterPrintFailure = await apiJson<{ invoiceId: string; printJobId: string }>(
+      env,
+      "/api/invoices",
+      { method: "POST", authToken: tenant.authToken, body: requestBody }
+    );
+    assert.equal(replayAfterPrintFailure.invoiceId, created.invoiceId);
+    assert.equal(replayAfterPrintFailure.printJobId, created.printJobId);
+    assert.equal(amegoCallCount, 1);
+
+    const unchanged = await env.DB.prepare(
+      `SELECT barcode_payload, qrcode_left, qrcode_right FROM invoices WHERE id = ?`
+    ).bind(created.invoiceId).first<{
+      barcode_payload: string;
+      qrcode_left: string;
+      qrcode_right: string;
+    }>();
+    assert.deepEqual(unchanged, {
+      barcode_payload: "11508CD123456785678",
+      qrcode_left: "AMEGO-OFFICIAL-LEFT",
+      qrcode_right: "**AMEGO-OFFICIAL-RIGHT"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Worker integration: unknown Amego result is queried and never reissued", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantrecover", "13572468");
+  await env.DB.prepare(
+    `UPDATE companies SET amego_app_key = 'test-app-key' WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const originalFetch = globalThis.fetch;
+  const endpoints: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    endpoints.push(url);
+    if (endpoints.length === 1) {
+      throw new TypeError("connection lost after send");
+    }
+    if (endpoints.length === 2) {
+      return Response.json({ code: 404, msg: "not found yet" });
+    }
+    return Response.json({
+      code: 0,
+      data: {
+        invoice_number: "EF12345678",
+        invoice_date: "20260712",
+        invoice_time: "15:30:00",
+        random_number: "9012",
+        barcode: "11508EF123456789012",
+        qrcode_left: "RECOVERED-LEFT",
+        qrcode_right: "**RECOVERED-RIGHT"
+      }
+    });
+  };
+
+  try {
+    const body = amegoInvoiceBody("ORDER-RECOVER-001");
+    const unknown = await api(env, "/api/invoices", {
+      method: "POST",
+      authToken: tenant.authToken,
+      body
+    });
+    assert.equal(unknown.status, 502);
+    assert.equal((await unknown.json() as { code: string }).code, "amego_result_unknown");
+
+    const issuance = await env.DB.prepare(
+      `SELECT status FROM invoice_issuances WHERE company_id = ? AND order_id = ?`
+    ).bind(tenant.company.id, "ORDER-RECOVER-001").first<{ status: string }>();
+    assert.equal(issuance?.status, "issuing");
+
+    const recovered = await apiJson<{ status: string; invoiceNumber: string }>(
+      env,
+      "/api/invoices",
+      { method: "POST", authToken: tenant.authToken, body },
+      200
+    );
+    assert.equal(recovered.status, "issued");
+    assert.equal(recovered.invoiceNumber, "EF12345678");
+    assert.equal(endpoints.filter((url) => url.endsWith("/f0401")).length, 1);
+    assert.equal(endpoints.filter((url) => url.endsWith("/invoice_query")).length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Worker integration: Amego request validates destination and calculates B2B tax", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenanttax", "86421357");
+  await env.DB.prepare(
+    `UPDATE companies SET amego_app_key = 'test-app-key' WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const originalFetch = globalThis.fetch;
+  const postedData: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (_input, init) => {
+    const form = new URLSearchParams(String(init?.body));
+    postedData.push(JSON.parse(form.get("data") ?? "{}") as Record<string, unknown>);
+    const index = postedData.length;
+    const invoiceNumbers = ["GH12345678", "IJ12345678", "KL12345678", "MN12345678"];
+    const randomNumbers = ["1111", "2222", "3333", "4444"];
+    return Response.json({
+      code: 0,
+      invoice_number: invoiceNumbers[index - 1],
+      invoice_date: "20260712",
+      invoice_time: 1783800000 + index,
+      random_number: randomNumbers[index - 1],
+      barcode: `11508${invoiceNumbers[index - 1]}${randomNumbers[index - 1]}`,
+      qrcode_left: `LEFT-${index}`,
+      qrcode_right: `**RIGHT-${index}`
+    });
+  };
+
+  try {
+    const conflict = await api(env, "/api/invoices", {
+      method: "POST",
+      authToken: tenant.authToken,
+      body: {
+        ...amegoInvoiceBody("ORDER-CONFLICT-001"),
+        buyerIdentifier: "12345678",
+        carrierType: "3J0002",
+        carrierId: "/ABCD123"
+      }
+    });
+    assert.equal(conflict.status, 400);
+    assert.equal((await conflict.json() as { code: string }).code, "invoice_destination_conflict");
+    assert.equal(postedData.length, 0);
+
+    const businessInvoice = await apiJson<{ printJobId: string }>(
+      env,
+      "/api/invoices",
+      {
+        method: "POST",
+        authToken: tenant.authToken,
+        body: {
+          orderId: "ORDER-B2B-001",
+          buyerIdentifier: "12345678",
+          buyerName: "測試買方公司",
+          totalAmount: 105,
+          items: [{ name: "顧問服務", quantity: 1, unitPrice: 105 }],
+          print: false
+        }
+      },
+      201
+    );
+    assert.ok(businessInvoice.printJobId);
+    assert.equal(postedData[0].BuyerIdentifier, "12345678");
+    assert.equal(postedData[0].SalesAmount, "100");
+    assert.equal(postedData[0].TaxAmount, "5");
+    const businessJob = await env.DB.prepare(
+      `SELECT payload_json FROM print_jobs WHERE id = ?`
+    ).bind(businessInvoice.printJobId).first<{ payload_json: string }>();
+    const businessPayload = JSON.parse(businessJob?.payload_json ?? "{}") as Record<string, unknown>;
+    assert.equal(businessPayload.salesAmount, 100);
+    assert.equal(businessPayload.taxAmount, 5);
+    assert.equal(businessPayload.invoiceFormatCode, "25");
+
+    const carrierInvoice = await apiJson<{ printJobId: string | null }>(
+      env,
+      "/api/invoices",
+      {
+        method: "POST",
+        authToken: tenant.authToken,
+        body: {
+          ...amegoInvoiceBody("ORDER-CARRIER-001"),
+          carrierType: "3J0002",
+          carrierId: "/ABCD123"
+        }
+      },
+      201
+    );
+    assert.equal(carrierInvoice.printJobId, null);
+    assert.equal(postedData[1].CarrierType, "3J0002");
+    assert.equal(postedData[1].CarrierId1, "/ABCD123");
+
+    const donatedInvoice = await apiJson<{ printJobId: string | null }>(
+      env,
+      "/api/invoices",
+      {
+        method: "POST",
+        authToken: tenant.authToken,
+        body: { ...amegoInvoiceBody("ORDER-DONATION-001"), npoban: "001" }
+      },
+      201
+    );
+    assert.equal(donatedInvoice.printJobId, null);
+    assert.equal(postedData[2].NPOBAN, "001");
+
+    const multipleItems = await apiJson<{ printJobId: string }>(
+      env,
+      "/api/invoices",
+      {
+        method: "POST",
+        authToken: tenant.authToken,
+        body: {
+          orderId: "ORDER-MULTI-001",
+          totalAmount: 75,
+          items: [
+            { name: "奶茶", quantity: 1, unitPrice: 45 },
+            { name: "加蛋", quantity: 2, unitPrice: 15 }
+          ],
+          print: true
+        }
+      },
+      201
+    );
+    assert.ok(multipleItems.printJobId);
+    assert.equal((postedData[3].ProductItem as unknown[]).length, 2);
+    assert.equal(postedData[3].TotalAmount, "75");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Worker integration: explicit Amego rejection is failed and is not retried", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantreject", "97531864");
+  await env.DB.prepare(
+    `UPDATE companies SET amego_app_key = 'test-app-key' WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    return Response.json({ code: 1001, msg: "invalid invoice data" });
+  };
+
+  try {
+    const body = amegoInvoiceBody("ORDER-REJECT-001");
+    const rejected = await api(env, "/api/invoices", {
+      method: "POST",
+      authToken: tenant.authToken,
+      body
+    });
+    assert.equal(rejected.status, 422);
+    assert.equal((await rejected.json() as { code: string }).code, "amego_invoice_rejected");
+
+    const issuance = await env.DB.prepare(
+      `SELECT status, error_code FROM invoice_issuances WHERE company_id = ? AND order_id = ?`
+    ).bind(tenant.company.id, "ORDER-REJECT-001").first<{ status: string; error_code: string }>();
+    assert.equal(issuance?.status, "failed");
+    assert.equal(issuance?.error_code, "1001");
+
+    const replayed = await api(env, "/api/invoices", {
+      method: "POST",
+      authToken: tenant.authToken,
+      body
+    });
+    assert.equal(replayed.status, 409);
+    assert.equal(callCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Worker integration: invoice management query, reprint, void, audit, and tenant isolation", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantmanage", "31415926");
+  const otherTenant = await registerTenant(env, "tenantother", "27182818");
+  await env.DB.prepare(
+    `UPDATE companies SET amego_app_key = 'test-app-key' WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const originalFetch = globalThis.fetch;
+  const endpoints: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    endpoints.push(url);
+    const form = new URLSearchParams(String(init?.body));
+    const data = JSON.parse(form.get("data") ?? "{}") as unknown;
+    if (url.endsWith("/f0501")) {
+      assert.deepEqual(data, [{ CancelInvoiceNumber: "KL12345678" }]);
+      return Response.json({ code: 0, msg: "voided" });
+    }
+    if (url.endsWith("/invoice_query")) {
+      assert.deepEqual(data, { type: "invoice", invoice_number: "KL12345678" });
+    }
+    return Response.json({
+      code: 0,
+      invoice_number: "KL12345678",
+      invoice_date: "20260712",
+      invoice_time: "16:20:00",
+      random_number: "3456",
+      barcode: "11508KL123456783456",
+      qrcode_left: "MANAGE-LEFT",
+      qrcode_right: "**MANAGE-RIGHT"
+    });
+  };
+
+  try {
+    const created = await apiJson<{ invoiceId: string; printJobId: string }>(
+      env,
+      "/api/invoices",
+      { method: "POST", authToken: tenant.authToken, body: amegoInvoiceBody("ORDER-MANAGE-001") },
+      201
+    );
+
+    const listed = await apiJson<{ invoices: Array<{ id: string; status: string }> }>(
+      env,
+      "/api/invoices",
+      { authToken: tenant.authToken }
+    );
+    assert.equal(listed.invoices.find((invoice) => invoice.id === created.invoiceId)?.status, "print_pending");
+
+    const isolatedDetail = await api(env, `/api/invoices/${created.invoiceId}`, {
+      authToken: otherTenant.authToken
+    });
+    assert.equal(isolatedDetail.status, 404);
+
+    await env.DB.prepare(
+      `UPDATE invoices SET invoice_date = NULL WHERE id = ? AND company_id = ?`
+    ).bind(created.invoiceId, tenant.company.id).run();
+    const refreshed = await apiJson<{ invoice: { invoiceDate: string } }>(
+      env,
+      `/api/invoices/${created.invoiceId}/refresh`,
+      { method: "POST", authToken: tenant.authToken, body: {} }
+    );
+    assert.equal(refreshed.invoice.invoiceDate, "20260712");
+
+    const reprint = await apiJson<{ printJobId: string }>(
+      env,
+      `/api/invoices/${created.invoiceId}/reprint`,
+      { method: "POST", authToken: tenant.authToken, body: {} },
+      201
+    );
+    assert.notEqual(reprint.printJobId, created.printJobId);
+    const reprintRow = await env.DB.prepare(
+      `SELECT payload_json FROM print_jobs WHERE id = ? AND company_id = ? AND invoice_id = ?`
+    ).bind(reprint.printJobId, tenant.company.id, created.invoiceId).first<{ payload_json: string }>();
+    const reprintPayload = JSON.parse(reprintRow?.payload_json ?? "{}") as Record<string, unknown>;
+    assert.equal(reprintPayload.barcodePayload, "11508KL123456783456");
+    assert.equal(reprintPayload.leftQRCodePayload, "MANAGE-LEFT");
+    assert.equal(reprintPayload.rightQRCodePayload, "**MANAGE-RIGHT");
+    assert.equal(reprintPayload.salesAmount, 45);
+    assert.equal(reprintPayload.taxAmount, 0);
+    assert.equal(reprintPayload.invoiceFormatCode, undefined);
+    assert.equal(reprintPayload.isReprint, true);
+
+    await apiJson(
+      env,
+      `/api/invoices/${created.invoiceId}/void`,
+      { method: "POST", authToken: tenant.authToken, body: {} }
+    );
+    const voided = await apiJson<{ invoice: { status: string; voidedAt: string } }>(
+      env,
+      `/api/invoices/${created.invoiceId}`,
+      { authToken: tenant.authToken }
+    );
+    assert.equal(voided.invoice.status, "voided");
+    assert.ok(voided.invoice.voidedAt);
+
+    const stoppedJobs = await env.DB.prepare(
+      `SELECT status, last_error FROM print_jobs WHERE invoice_id = ? ORDER BY created_at ASC`
+    ).bind(created.invoiceId).all<{ status: string; last_error: string }>();
+    assert.equal(stoppedJobs.results.length, 2);
+    assert.equal(stoppedJobs.results.every((job) => job.status === "failed" && job.last_error === "invoice_voided"), true);
+
+    const actions = await env.DB.prepare(
+      `SELECT action FROM audit_logs WHERE company_id = ? AND target_id = ? ORDER BY created_at ASC`
+    ).bind(tenant.company.id, created.invoiceId).all<{ action: string }>();
+    assert.equal(actions.results.some((row) => row.action === "invoice.query.completed"), true);
+    assert.equal(actions.results.some((row) => row.action === "invoice.reprint.created"), true);
+    assert.equal(actions.results.some((row) => row.action === "invoice.void.completed"), true);
+    assert.equal(endpoints.filter((url) => url.endsWith("/invoice_query")).length, 1);
+    assert.equal(endpoints.filter((url) => url.endsWith("/f0501")).length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Worker scheduled observability logs stale print queues", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "tenante", "55667788");
@@ -564,5 +1084,14 @@ function printJobBody(companyId: number, invoiceNumber: string, idempotencyKey: 
     items: [{ name: "奶茶", quantity: 1, unitPrice: 45 }],
     qrCodePayload: "QR",
     barcodePayload: invoiceNumber
+  };
+}
+
+function amegoInvoiceBody(orderId: string) {
+  return {
+    orderId,
+    totalAmount: 45,
+    items: [{ name: "奶茶", quantity: 1, unitPrice: 45 }],
+    print: true
   };
 }

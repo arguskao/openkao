@@ -10,7 +10,7 @@ struct PrinterSettingsView: View {
                     ReadOnlyRow(title: "藍牙", value: printerManager.bluetoothState)
                     ReadOnlyRow(title: "目前印表機", value: printerManager.connectedPrinterName ?? "未連線")
                     ReadOnlyRow(title: "已儲存", value: printerManager.savedPrinterName ?? "無")
-                    ReadOnlyRow(title: "紙張", value: printerManager.paperWidth.title)
+                    ReadOnlyRow(title: "紙張", value: ReceiptLayout.paperTitle)
 
                     if let message = printerManager.statusMessage {
                         Text(message)
@@ -20,14 +20,6 @@ struct PrinterSettingsView: View {
                 }
 
                 Section("操作") {
-                    Picker("紙張寬度", selection: Binding(
-                        get: { printerManager.paperWidth },
-                        set: { printerManager.updatePaperWidth($0) }
-                    )) {
-                        Text("58mm").tag(ReceiptPaperWidth.mm58)
-                        Text("80mm").tag(ReceiptPaperWidth.mm80)
-                    }
-
                     Button {
                         printerManager.isScanning
                             ? printerManager.stopScan()
