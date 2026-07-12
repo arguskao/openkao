@@ -46,10 +46,13 @@ struct ReceiptRenderer {
             data.appendLine("")
             data.append(contentsOf: ESC.alignLeft)
             data.append(contentsOf: ESC.leftMargin(points: ReceiptLayout.qrLeftMarginDots))
-            data.appendRasterImage(try ReceiptRasterizer.dualQRCode(
-                leftPayload: left,
-                rightPayload: right
-            ))
+            data.appendRasterImage(
+                try ReceiptRasterizer.dualQRCode(
+                    leftPayload: left,
+                    rightPayload: right
+                ),
+                maximumRowsPerCommand: 50
+            )
             data.append(contentsOf: ESC.leftMargin(points: 0))
         case (nil, nil), ("", ""):
             if let qrCodePayload = job.qrCodePayload, !qrCodePayload.isEmpty {
@@ -288,17 +291,28 @@ private extension Data {
         append(contentsOf: [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30])
     }
 
-    mutating func appendRasterImage(_ image: ESCPosRasterImage) {
+    mutating func appendRasterImage(
+        _ image: ESCPosRasterImage,
+        maximumRowsPerCommand: Int? = nil
+    ) {
         let bytesPerRow = (image.width + 7) / 8
         guard bytesPerRow <= 65535, image.height <= 65535 else { return }
-        append(contentsOf: [
-            0x1D, 0x76, 0x30, 0x00,
-            UInt8(bytesPerRow & 0xFF),
-            UInt8((bytesPerRow >> 8) & 0xFF),
-            UInt8(image.height & 0xFF),
-            UInt8((image.height >> 8) & 0xFF)
-        ])
-        append(contentsOf: image.bytes)
+        let rowsPerCommand = Swift.min(maximumRowsPerCommand ?? image.height, image.height)
+        guard rowsPerCommand > 0 else { return }
+
+        for startRow in stride(from: 0, to: image.height, by: rowsPerCommand) {
+            let rowCount = Swift.min(rowsPerCommand, image.height - startRow)
+            append(contentsOf: [
+                0x1D, 0x76, 0x30, 0x00,
+                UInt8(bytesPerRow & 0xFF),
+                UInt8((bytesPerRow >> 8) & 0xFF),
+                UInt8(rowCount & 0xFF),
+                UInt8((rowCount >> 8) & 0xFF)
+            ])
+            let dataStart = startRow * bytesPerRow
+            let dataEnd = dataStart + rowCount * bytesPerRow
+            append(contentsOf: image.bytes[dataStart..<dataEnd])
+        }
         append(0x0A)
     }
 

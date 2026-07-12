@@ -195,11 +195,11 @@ final class PrinterManager: NSObject, ObservableObject {
     }
 
     private func preferredWriteType(for characteristic: CBCharacteristic) -> CBCharacteristicWriteType? {
-        if characteristic.properties.contains(.writeWithoutResponse) {
-            return .withoutResponse
-        }
         if characteristic.properties.contains(.write) {
             return .withResponse
+        }
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            return .withoutResponse
         }
         return nil
     }
@@ -232,7 +232,7 @@ final class PrinterManager: NSObject, ObservableObject {
                 let chunk = currentPrintChunks[currentPrintChunkIndex]
                 peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
                 currentPrintChunkIndex += 1
-                if currentPrintChunkIndex.isMultiple(of: 4) {
+                if currentPrintChunkIndex.isMultiple(of: 2) {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
                         self.pumpWriteQueue()
                     }
@@ -432,7 +432,9 @@ extension PrinterManager: CBPeripheralDelegate {
         guard currentWriteType == .withResponse else { return }
         isAwaitingWriteResponse = false
         currentPrintChunkIndex += 1
-        pumpWriteQueue()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+            self.pumpWriteQueue()
+        }
     }
 
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {

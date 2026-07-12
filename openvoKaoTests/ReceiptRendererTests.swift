@@ -92,15 +92,16 @@ final class ReceiptRendererTests: XCTestCase {
         let data = try ReceiptRenderer().render(job: makeJob())
         let images = data.rasterImagesForTests
 
-        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(images.count, 4)
         XCTAssertEqual(images[0].widthBytes, 48)
         XCTAssertEqual(images[0].height, 88)
-        XCTAssertEqual(images[1].widthBytes, 42)
-        XCTAssertEqual(images[1].height, 150)
+        XCTAssertTrue(images[1...3].allSatisfy {
+            $0.widthBytes == 42 && $0.height == 50
+        })
         XCTAssertGreaterThanOrEqual(images[0].minimumBlackRunWidth, 2)
         XCTAssertTrue(data.containsBytes([
             0x1D, 0x4C, 0x17, 0x00,
-            0x1D, 0x76, 0x30, 0x00, 0x2A, 0x00, 0x96, 0x00
+            0x1D, 0x76, 0x30, 0x00, 0x2A, 0x00, 0x32, 0x00
         ]))
         XCTAssertTrue(data.containsBytes([0x1D, 0x4C, 0x00, 0x00]))
         XCTAssertFalse(data.containsBytes([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41]))
