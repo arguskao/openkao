@@ -9,42 +9,12 @@ struct ContentView: View {
     var body: some View {
         Group {
             if store.isAuthenticated {
-                TabView(selection: $selectedTab) {
-                    IssueInvoiceView()
-                        .tabItem {
-                            Label("開發票", systemImage: "doc.badge.plus")
-                        }
-                        .tag(AppTab.issue)
+                VStack(spacing: 0) {
+                    currentTabView
 
-                    PrintQueueView()
-                        .tabItem {
-                            Label("待列印", systemImage: "list.bullet.rectangle")
-                        }
-                        .tag(AppTab.queue)
+                    Divider()
 
-                    PrinterSettingsView()
-                        .tabItem {
-                            Label("印表機", systemImage: "printer")
-                        }
-                        .tag(AppTab.printer)
-
-                    SalesReportView()
-                        .tabItem {
-                            Label("業績", systemImage: "chart.bar.xaxis")
-                        }
-                        .tag(AppTab.backend)
-
-                    ProductCatalogView()
-                        .tabItem {
-                            Label("商品", systemImage: "shippingbox")
-                        }
-                        .tag(AppTab.history)
-
-                    InvoiceManagementView()
-                        .tabItem {
-                            Label("發票", systemImage: "doc.text")
-                        }
-                        .tag(AppTab.settings)
+                    CompactTabBar(selection: $selectedTab)
                 }
             } else {
                 AuthGatewayView()
@@ -57,9 +27,27 @@ struct ContentView: View {
             await store.restoreAuthSession()
         }
     }
+
+    @ViewBuilder
+    private var currentTabView: some View {
+        switch selectedTab {
+        case .issue:
+            IssueInvoiceView()
+        case .queue:
+            PrintQueueView()
+        case .printer:
+            PrinterSettingsView()
+        case .backend:
+            SalesReportView()
+        case .history:
+            ProductCatalogView()
+        case .settings:
+            InvoiceManagementView()
+        }
+    }
 }
 
-private enum AppTab {
+private enum AppTab: CaseIterable, Identifiable {
     case issue
     case queue
     case printer
@@ -67,8 +55,76 @@ private enum AppTab {
     case history
     case settings
 
+    var id: Self { self }
+
     static var initial: AppTab {
         ProcessInfo.processInfo.arguments.contains("-startSettings") ? .settings : .issue
+    }
+
+    var title: String {
+        switch self {
+        case .issue:
+            return "開票"
+        case .queue:
+            return "待印"
+        case .printer:
+            return "印表"
+        case .backend:
+            return "業績"
+        case .history:
+            return "商品"
+        case .settings:
+            return "發票"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .issue:
+            return "doc.badge.plus"
+        case .queue:
+            return "list.bullet"
+        case .printer:
+            return "printer"
+        case .backend:
+            return "chart.bar"
+        case .history:
+            return "shippingbox"
+        case .settings:
+            return "doc.text"
+        }
+    }
+}
+
+private struct CompactTabBar: View {
+    @Binding var selection: AppTab
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(AppTab.allCases) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 18, weight: selection == tab ? .semibold : .regular))
+
+                        Text(tab.title)
+                            .font(.system(size: 10, weight: selection == tab ? .semibold : .regular))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(selection == tab ? .accentColor : .secondary)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.bottom, 4)
+        .background(Color(uiColor: .systemBackground))
     }
 }
 

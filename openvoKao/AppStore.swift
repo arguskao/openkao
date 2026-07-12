@@ -165,8 +165,8 @@ final class AppStore: ObservableObject {
         catalogSyncStatus = OperationStatus(isSyncing: true, message: "同步商品中")
 
         do {
-            async let categories = backendClient.fetchCatalogCategories()
-            async let productPayload = backendClient.fetchCatalogProducts()
+            async let categories = authClient.fetchCatalogCategories()
+            async let productPayload = authClient.fetchCatalogProducts()
             let fetchedCategories = try await categories
             let fetchedProducts = try await productPayload
 
@@ -197,17 +197,17 @@ final class AppStore: ObservableObject {
     }
 
     func createCategory(name: String, sortOrder: Int, status: String) async throws {
-        _ = try await backendClient.createCatalogCategory(name: name, sortOrder: sortOrder, status: status)
+        _ = try await authClient.createCatalogCategory(name: name, sortOrder: sortOrder, status: status)
         await refreshCatalog()
     }
 
     func updateCategory(id: Int, name: String, sortOrder: Int, status: String) async throws {
-        _ = try await backendClient.updateCatalogCategory(id: id, name: name, sortOrder: sortOrder, status: status)
+        _ = try await authClient.updateCatalogCategory(id: id, name: name, sortOrder: sortOrder, status: status)
         await refreshCatalog()
     }
 
     func deleteCategory(id: Int) async throws {
-        try await backendClient.deleteCatalogCategory(id: id)
+        try await authClient.deleteCatalogCategory(id: id)
         await refreshCatalog()
     }
 
@@ -220,7 +220,7 @@ final class AppStore: ObservableObject {
         taxType: String,
         sortOrder: Int
     ) async throws {
-        _ = try await backendClient.createCatalogProduct(
+        _ = try await authClient.createCatalogProduct(
             categoryId: categoryId,
             name: name,
             price: price,
@@ -242,7 +242,7 @@ final class AppStore: ObservableObject {
         taxType: String,
         sortOrder: Int
     ) async throws {
-        _ = try await backendClient.updateCatalogProduct(
+        _ = try await authClient.updateCatalogProduct(
             id: id,
             categoryId: categoryId,
             name: name,
@@ -256,12 +256,12 @@ final class AppStore: ObservableObject {
     }
 
     func updateCatalogPriceDecimalPlaces(_ value: Int) async throws {
-        _ = try await backendClient.updateCatalogPriceSettings(priceDecimalPlaces: value)
+        _ = try await authClient.updateCatalogPriceSettings(priceDecimalPlaces: value)
         await refreshCatalog()
     }
 
     func deleteProduct(id: Int) async throws {
-        try await backendClient.deleteCatalogProduct(id: id)
+        try await authClient.deleteCatalogProduct(id: id)
         await refreshCatalog()
     }
 
