@@ -66,7 +66,7 @@ OpenKao 仍維持之前的決定：條碼位置依官方格式，但一維條碼
 - [x] 一維條碼資料值以 Amego 回傳的 `barcode` 為準，但不得使用 Amego `base64_data` 或印表機型號相關的條碼列印資料。
 - [x] 一維條碼圖像由 OpenKao 固定 renderer 產生 Code128 點陣圖，避免不同 58mm 印表機對 Amego/ESC-POS 條碼指令支援不一致。
 - [x] QRCode 內容仍只使用 Amego 回傳的 `qrcode_left`、`qrcode_right`。
-- [x] 左右 QRCode 先合成同一張圖，再以 24-dot 分帶格式傳送，避免印表機因單張點陣資料過大而略過 QRCode。
+- [x] 左右 QRCode 合成同一張 `336 x 150` 點陣圖，設定 23 點左邊界後以 `GS v 0` 傳送，對齊光貿實際列印格式。
 - [x] 掃描 PDF 或圖片中的左右 QRCode，確認內容可讀出。
 - [ ] 使用實體 58mm 印表機列印後，掃描左右 QRCode。
 - [ ] 使用實體 58mm 印表機列印後，掃描一維條碼。

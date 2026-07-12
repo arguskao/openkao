@@ -73,12 +73,12 @@ enum ReceiptRasterizer {
         }
 
         let pairWidth = canvasSize * 2 + gap
-        let pairOriginX = (ReceiptLayout.printableDots - pairWidth) / 2
+        let pairOriginX = (ReceiptLayout.qrImageWidthDots - pairWidth) / 2
         guard pairOriginX >= 0 else {
             throw ReceiptRasterError.imageTooLarge
         }
 
-        var output = ESCPosRasterImage(width: ReceiptLayout.printableDots, height: canvasSize)
+        var output = ESCPosRasterImage(width: ReceiptLayout.qrImageWidthDots, height: canvasSize)
         drawQRMatrix(left, in: &output, canvasX: pairOriginX, canvasSize: canvasSize, scale: moduleScale)
         drawQRMatrix(right, in: &output, canvasX: pairOriginX + canvasSize + gap, canvasSize: canvasSize, scale: moduleScale)
         return output

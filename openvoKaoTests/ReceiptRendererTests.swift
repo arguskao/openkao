@@ -26,12 +26,12 @@ final class ReceiptRendererTests: XCTestCase {
 
         XCTAssertTrue(data.containsBytes([
             0x1B, 0x45, 0x01,
-            0x1D, 0x21, 0x10,
-            0x1C, 0x21, 0x08
+            0x1D, 0x21, 0x11,
+            0x1C, 0x21, 0x0C
         ]))
         XCTAssertTrue(data.containsBytes([
-            0x1D, 0x21, 0x10,
-            0x1C, 0x21, 0x08
+            0x1D, 0x21, 0x11,
+            0x1C, 0x21, 0x0C
         ] + (GBKTestEncoding.data(from: "電子發票證明聯") ?? [])))
         XCTAssertTrue(data.containsBytes([
             0x1D, 0x21, 0x11,
@@ -88,17 +88,21 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertTrue(wrappedLines.allSatisfy { $0.gbkReceiptDisplayWidthForTests <= ReceiptLayout.textColumns })
     }
 
-    func testDualQrUsesCompatibleBitImageStripesAndBarcodeUsesRaster() throws {
+    func testDualQrUsesAmegoCompatibleRasterSizeAndMargin() throws {
         let data = try ReceiptRenderer().render(job: makeJob())
         let images = data.rasterImagesForTests
 
-        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(images.count, 2)
         XCTAssertEqual(images[0].widthBytes, 48)
         XCTAssertEqual(images[0].height, 88)
+        XCTAssertEqual(images[1].widthBytes, 42)
+        XCTAssertEqual(images[1].height, 150)
         XCTAssertGreaterThanOrEqual(images[0].minimumBlackRunWidth, 2)
-        XCTAssertTrue(data.containsBytes([0x1B, 0x33, 0x18]))
-        XCTAssertTrue(data.containsBytes([0x1B, 0x2A, 0x21, 0x80, 0x01]))
-        XCTAssertTrue(data.containsBytes([0x1B, 0x32]))
+        XCTAssertTrue(data.containsBytes([
+            0x1D, 0x4C, 0x17, 0x00,
+            0x1D, 0x76, 0x30, 0x00, 0x2A, 0x00, 0x96, 0x00
+        ]))
+        XCTAssertTrue(data.containsBytes([0x1D, 0x4C, 0x00, 0x00]))
         XCTAssertFalse(data.containsBytes([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41]))
         XCTAssertFalse(data.containsBytes([0x1D, 0x6B, 0x49]))
         XCTAssertFalse(data.containsBytes(Array("11508AB123456781234".utf8)))

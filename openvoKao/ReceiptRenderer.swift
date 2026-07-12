@@ -4,8 +4,10 @@ enum ReceiptLayout {
     static let paperTitle = "58mm"
     static let textColumns = 32
     static let printableDots = 384
-    static let qrCanvasDots = 168
-    static let qrGapDots = 6
+    static let qrImageWidthDots = 336
+    static let qrCanvasDots = 150
+    static let qrGapDots = 30
+    static let qrLeftMarginDots = 23
     static let barcodeHeightDots = 88
 }
 
@@ -20,10 +22,9 @@ struct ReceiptRenderer {
         data.append(contentsOf: ESC.alignCenter)
         data.appendLine(job.sellerName ?? "電子發票證明聯")
         data.append(contentsOf: ESC.emphasisOn)
-        data.append(contentsOf: ESC.doubleHeight)
+        data.append(contentsOf: ESC.doubleSize)
         data.appendLine(receiptTitle(for: job))
         data.appendLine(periodText)
-        data.append(contentsOf: ESC.doubleSize)
         data.appendLine(displayInvoiceNumber(job.invoiceNumber))
         data.append(contentsOf: ESC.normalSize)
         data.append(contentsOf: ESC.emphasisOff)
@@ -43,11 +44,13 @@ struct ReceiptRenderer {
         switch (job.leftQRCodePayload, job.rightQRCodePayload) {
         case let (left?, right?) where !left.isEmpty && !right.isEmpty:
             data.appendLine("")
-            data.append(contentsOf: ESC.alignCenter)
-            data.appendBitImage(try ReceiptRasterizer.dualQRCode(
+            data.append(contentsOf: ESC.alignLeft)
+            data.append(contentsOf: ESC.leftMargin(points: ReceiptLayout.qrLeftMarginDots))
+            data.appendRasterImage(try ReceiptRasterizer.dualQRCode(
                 leftPayload: left,
                 rightPayload: right
             ))
+            data.append(contentsOf: ESC.leftMargin(points: 0))
         case (nil, nil), ("", ""):
             if let qrCodePayload = job.qrCodePayload, !qrCodePayload.isEmpty {
                 data.appendLine("")
@@ -241,6 +244,15 @@ private enum ESC {
     static func feed(points: UInt8) -> [UInt8] {
         [0x1B, 0x4A, points]
     }
+
+    static func leftMargin(points: Int) -> [UInt8] {
+        let clamped = max(0, min(points, 65535))
+        return [
+            0x1D, 0x4C,
+            UInt8(clamped & 0xFF),
+            UInt8((clamped >> 8) & 0xFF)
+        ]
+    }
 }
 
 private extension Data {
@@ -290,34 +302,6 @@ private extension Data {
         append(0x0A)
     }
 
-    mutating func appendBitImage(_ image: ESCPosRasterImage) {
-        let stripeHeight = 24
-        guard image.width > 0, image.width <= 65535, image.height > 0 else { return }
-
-        append(contentsOf: [0x1B, 0x33, UInt8(stripeHeight)])
-        for stripeY in stride(from: 0, to: image.height, by: stripeHeight) {
-            append(contentsOf: [
-                0x1B, 0x2A, 0x21,
-                UInt8(image.width & 0xFF),
-                UInt8((image.width >> 8) & 0xFF)
-            ])
-
-            for x in 0..<image.width {
-                for byteOffset in 0..<3 {
-                    var verticalByte: UInt8 = 0
-                    for bit in 0..<8 {
-                        let y = stripeY + byteOffset * 8 + bit
-                        if y < image.height, image.isBlack(x: x, y: y) {
-                            verticalByte |= UInt8(0x80 >> bit)
-                        }
-                    }
-                    append(verticalByte)
-                }
-            }
-            append(0x0A)
-        }
-        append(contentsOf: [0x1B, 0x32])
-    }
 }
 
 private extension String {
