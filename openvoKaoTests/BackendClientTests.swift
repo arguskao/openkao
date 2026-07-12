@@ -194,6 +194,57 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(invoices[1].items.first?.name, "奶茶")
     }
 
+    func testIssueInvoicePostsAuthPayload() async throws {
+        let session = StubBackendURLSession { request in
+            XCTAssertEqual(request.url?.path, "/api/invoices")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer auth-token")
+            let body = try XCTUnwrap(request.httpBody)
+            let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(json?["orderId"] as? String, "APP-20260712153000-ABCDEF12")
+            XCTAssertEqual(json?["buyerIdentifier"] as? String, "03741302")
+            XCTAssertEqual(json?["totalAmount"] as? Int, 135)
+            XCTAssertEqual(json?["print"] as? Bool, true)
+            let items = try XCTUnwrap(json?["items"] as? [[String: Any]])
+            XCTAssertEqual(items.count, 2)
+            XCTAssertEqual(items[0]["name"] as? String, "加蛋")
+            XCTAssertEqual(items[0]["quantity"] as? Int, 3)
+            XCTAssertEqual(items[0]["unitPrice"] as? Int, 15)
+            XCTAssertEqual(items[1]["name"] as? String, "奶茶")
+
+            return httpResponse(
+                statusCode: 201,
+                url: request.url,
+                body: """
+                {
+                  "issuanceId": "issue-1",
+                  "status": "issued",
+                  "orderId": "APP-20260712153000-ABCDEF12",
+                  "invoiceId": "invoice-1",
+                  "invoiceNumber": "AB12345678",
+                  "randomNumber": "1234",
+                  "printJobId": "job-1"
+                }
+                """
+            )
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "auth-token", urlSession: session)
+
+        let invoice = try await client.issueInvoice(
+            orderId: "APP-20260712153000-ABCDEF12",
+            buyerIdentifier: "03741302",
+            totalAmount: 135,
+            items: [
+                InvoiceIssueItemRequest(name: "加蛋", quantity: 3, unitPrice: 15),
+                InvoiceIssueItemRequest(name: "奶茶", quantity: 2, unitPrice: 45)
+            ],
+            shouldPrint: true
+        )
+
+        XCTAssertEqual(invoice.invoiceNumber, "AB12345678")
+        XCTAssertEqual(invoice.printJobId, "job-1")
+    }
+
     func testCancellationPropagates() async {
         let session = StubBackendURLSession { _ in
             try await Task.sleep(nanoseconds: 5_000_000_000)

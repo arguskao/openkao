@@ -266,6 +266,27 @@ struct BackendClient {
         return response.invoices
     }
 
+    func issueInvoice(
+        orderId: String,
+        buyerIdentifier: String?,
+        totalAmount: Int,
+        items: [InvoiceIssueItemRequest],
+        shouldPrint: Bool
+    ) async throws -> IssuedInvoice {
+        try await request(
+            path: "/api/invoices",
+            method: "POST",
+            authorization: .auth,
+            body: InvoiceIssueRequest(
+                orderId: orderId,
+                buyerIdentifier: buyerIdentifier,
+                totalAmount: totalAmount,
+                items: items,
+                print: shouldPrint
+            )
+        )
+    }
+
     func refreshInvoice(id: String) async throws -> ManagedInvoice {
         let response: ManagedInvoiceResponse = try await request(
             path: "/api/invoices/\(id)/refresh",
@@ -585,6 +606,20 @@ private struct CatalogProductUpsertRequest: Encodable {
 
 private struct CatalogSettingsUpdateRequest: Encodable {
     let priceDecimalPlaces: Int
+}
+
+struct InvoiceIssueItemRequest: Encodable, Equatable {
+    let name: String
+    let quantity: Int
+    let unitPrice: Int
+}
+
+private struct InvoiceIssueRequest: Encodable {
+    let orderId: String
+    let buyerIdentifier: String?
+    let totalAmount: Int
+    let items: [InvoiceIssueItemRequest]
+    let print: Bool
 }
 
 private struct ManagedInvoicesResponse: Decodable {

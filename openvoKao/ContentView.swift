@@ -10,6 +10,12 @@ struct ContentView: View {
         Group {
             if store.isAuthenticated {
                 TabView(selection: $selectedTab) {
+                    IssueInvoiceView()
+                        .tabItem {
+                            Label("開發票", systemImage: "doc.badge.plus")
+                        }
+                        .tag(AppTab.issue)
+
                     PrintQueueView()
                         .tabItem {
                             Label("待列印", systemImage: "list.bullet.rectangle")
@@ -54,6 +60,7 @@ struct ContentView: View {
 }
 
 private enum AppTab {
+    case issue
     case queue
     case printer
     case backend
@@ -61,7 +68,7 @@ private enum AppTab {
     case settings
 
     static var initial: AppTab {
-        ProcessInfo.processInfo.arguments.contains("-startSettings") ? .settings : .queue
+        ProcessInfo.processInfo.arguments.contains("-startSettings") ? .settings : .issue
     }
 }
 

@@ -421,6 +421,29 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func issueInvoice(
+        buyerIdentifier: String?,
+        totalAmount: Int,
+        items: [InvoiceIssueItemRequest]
+    ) async throws -> IssuedInvoice {
+        invoiceSyncStatus = OperationStatus(isSyncing: true, message: "開立發票中")
+        do {
+            let invoice = try await authClient.issueInvoice(
+                orderId: Self.makeInvoiceOrderId(),
+                buyerIdentifier: buyerIdentifier,
+                totalAmount: totalAmount,
+                items: items,
+                shouldPrint: true
+            )
+            invoiceSyncStatus = OperationStatus(isSyncing: false, message: "已開立發票：\(invoice.invoiceNumber)")
+            await refreshPendingJobs()
+            return invoice
+        } catch {
+            invoiceSyncStatus = OperationStatus(isSyncing: false, message: error.localizedDescription)
+            throw error
+        }
+    }
+
     func refreshInvoice(id: String) async throws -> ManagedInvoice {
         try await authClient.refreshInvoice(id: id)
     }
@@ -650,6 +673,11 @@ final class AppStore: ObservableObject {
         return trimmedLegacyValue
     }
 
+    private static func makeInvoiceOrderId() -> String {
+        let timestamp = DateFormatter.invoiceOrderId.string(from: Date())
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)
+        return "APP-\(timestamp)-\(suffix)"
+    }
 }
 
 private extension JSONEncoder {
@@ -666,4 +694,14 @@ private extension JSONDecoder {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }
+}
+
+private extension DateFormatter {
+    static let invoiceOrderId: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Taipei")
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        return formatter
+    }()
 }

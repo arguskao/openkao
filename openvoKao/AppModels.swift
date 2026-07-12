@@ -158,6 +158,16 @@ struct ManagedInvoice: Identifiable, Codable, Equatable {
     }
 }
 
+struct IssuedInvoice: Codable, Equatable {
+    var issuanceId: String
+    var status: String
+    var orderId: String
+    var invoiceId: String
+    var invoiceNumber: String
+    var randomNumber: String
+    var printJobId: String?
+}
+
 enum ManagedInvoiceStatus: String, Codable, CaseIterable {
     case issuing
     case issued
