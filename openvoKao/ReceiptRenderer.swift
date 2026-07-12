@@ -4,8 +4,8 @@ enum ReceiptLayout {
     static let paperTitle = "58mm"
     static let textColumns = 32
     static let printableDots = 384
-    static let qrCanvasDots = 184
-    static let qrGapDots = 8
+    static let qrCanvasDots = 168
+    static let qrGapDots = 6
     static let barcodeHeightDots = 88
 }
 
@@ -85,7 +85,9 @@ struct ReceiptRenderer {
 
         data.appendLine("")
         data.appendLine("")
-        data.append(contentsOf: ESC.feed(points: 120))
+        data.appendLine("")
+        data.append(contentsOf: ESC.feed(points: 255))
+        data.append(contentsOf: ESC.feed(points: 255))
         return data
     }
 

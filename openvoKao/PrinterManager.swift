@@ -174,7 +174,7 @@ final class PrinterManager: NSObject, ObservableObject {
             throw PrinterError.unsupportedCharacteristic
         }
 
-        let chunkSize = max(1, peripheral.maximumWriteValueLength(for: writeType))
+        let chunkSize = max(1, min(peripheral.maximumWriteValueLength(for: writeType), 120))
         let chunks = stride(from: 0, to: data.count, by: chunkSize).map { start -> Data in
             let end = min(start + chunkSize, data.count)
             return data.subdata(in: start..<end)
@@ -232,6 +232,12 @@ final class PrinterManager: NSObject, ObservableObject {
                 let chunk = currentPrintChunks[currentPrintChunkIndex]
                 peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
                 currentPrintChunkIndex += 1
+                if currentPrintChunkIndex.isMultiple(of: 8) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                        self.pumpWriteQueue()
+                    }
+                    return
+                }
             }
             pumpWriteQueue()
         @unknown default:
