@@ -99,11 +99,11 @@ final class AppStore: ObservableObject {
     }
 
     var pendingJobs: [PrintJob] {
-        printJobs.filter { $0.status == .pending }
+        printJobs.filter { $0.status == .pending || $0.status == .printing }
     }
 
     var printedJobs: [PrintJob] {
-        printJobs.filter { $0.status != .pending }
+        printJobs.filter { $0.status != .pending && $0.status != .printing }
     }
 
     var isSyncing: Bool {

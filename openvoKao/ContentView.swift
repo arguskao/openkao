@@ -444,6 +444,8 @@ struct PrintQueueView: View {
     @State private var selectedJob: PrintJob?
     @State private var alert: AppAlert?
     @State private var refreshTask: Task<Void, Never>?
+    @State private var autoPrintTask: Task<Void, Never>?
+    @State private var autoPrintingRemoteIds = Set<String>()
 
     var body: some View {
         NavigationView {
@@ -501,9 +503,21 @@ struct PrintQueueView: View {
             .alert(item: $alert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好")))
             }
+            .task {
+                startRefreshPendingJobs()
+                scheduleAutoPrint()
+            }
+            .onChange(of: store.pendingJobs) { _ in
+                scheduleAutoPrint()
+            }
+            .onChange(of: printerManager.isPrinterReady) { _ in
+                scheduleAutoPrint()
+            }
             .onDisappear {
                 refreshTask?.cancel()
                 refreshTask = nil
+                autoPrintTask?.cancel()
+                autoPrintTask = nil
             }
         }
     }
@@ -529,6 +543,22 @@ struct PrintQueueView: View {
         } catch {
             await store.markFailedAndReport(job, message: error.localizedDescription)
             alert = AppAlert(title: "列印失敗", message: error.localizedDescription)
+        }
+    }
+
+    private func scheduleAutoPrint() {
+        guard printerManager.isPrinterReady else { return }
+        guard autoPrintTask == nil else { return }
+
+        autoPrintTask = Task {
+            defer { autoPrintTask = nil }
+            for job in store.pendingJobs {
+                guard !Task.isCancelled else { return }
+                guard !autoPrintingRemoteIds.contains(job.remoteId) else { continue }
+                autoPrintingRemoteIds.insert(job.remoteId)
+                await print(job)
+                autoPrintingRemoteIds.remove(job.remoteId)
+            }
         }
     }
 }
