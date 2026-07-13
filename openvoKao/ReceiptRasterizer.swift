@@ -51,8 +51,8 @@ struct ESCPosRasterImage {
 }
 
 enum ReceiptRasterizer {
-    private static let context = CIContext(options: [.useSoftwareRenderer: false])
-    private static let quietZoneModules = 4
+    private static let context = CIContext(options: [.useSoftwareRenderer: true])
+    private static let quietZoneModules = 0
 
     static func qrPayloadData(_ payload: String) -> Data {
         Data(payload.utf8)
@@ -66,11 +66,6 @@ enum ReceiptRasterizer {
         let right = try qrMatrix(payload: rightPayload)
         let canvasSize = ReceiptLayout.qrCanvasDots
         let gap = ReceiptLayout.qrGapDots
-        let requiredModules = max(left.width, right.width) + quietZoneModules * 2
-        let moduleScale = canvasSize / requiredModules
-        guard moduleScale >= 1 else {
-            throw ReceiptRasterError.imageTooLarge
-        }
 
         let pairWidth = canvasSize * 2 + gap
         let pairOriginX = (ReceiptLayout.qrImageWidthDots - pairWidth) / 2
@@ -79,9 +74,22 @@ enum ReceiptRasterizer {
         }
 
         var output = ESCPosRasterImage(width: ReceiptLayout.qrImageWidthDots, height: canvasSize)
-        drawQRMatrix(left, in: &output, canvasX: pairOriginX, canvasSize: canvasSize, scale: moduleScale)
-        drawQRMatrix(right, in: &output, canvasX: pairOriginX + canvasSize + gap, canvasSize: canvasSize, scale: moduleScale)
+        // 左右 QR 的資料長度通常不同，導致 QR 版本（模組數）不同。
+        // 若使用相同 scale，較小版本的 QR 會被縮得很小。
+        // 因此分別計算 scale，讓兩個 QR 都盡量填滿各自的 canvas，視覺大小才會一致。
+        let leftScale = scaleFor(matrix: left, canvasSize: canvasSize)
+        let rightScale = scaleFor(matrix: right, canvasSize: canvasSize)
+        guard leftScale >= 1, rightScale >= 1 else {
+            throw ReceiptRasterError.imageTooLarge
+        }
+        drawQRMatrix(left, in: &output, canvasX: pairOriginX, canvasSize: canvasSize, scale: leftScale)
+        drawQRMatrix(right, in: &output, canvasX: pairOriginX + canvasSize + gap, canvasSize: canvasSize, scale: rightScale)
         return output
+    }
+
+    private static func scaleFor(matrix: MonochromeMatrix, canvasSize: Int) -> Int {
+        let requiredModules = matrix.width + quietZoneModules * 2
+        return canvasSize / requiredModules
     }
 
     static func code128(payload: String) throws -> ESCPosRasterImage {
@@ -206,7 +214,12 @@ enum ReceiptRasterizer {
         guard let image = filter.outputImage else {
             throw ReceiptRasterError.invalidQRCode
         }
-        return try monochromeMatrix(from: image, invalidError: .invalidQRCode)
+        var matrix = try monochromeMatrix(from: image, invalidError: .invalidQRCode)
+        // CIQRCodeGenerator 會在 QR 模組四周自帶 1 module 的邊框（quiet zone），
+        // 如果保留它再額外加 quiet zone，QR 符號會被縮得很小，列印機難以辨識。
+        // 裁掉這層內建邊框，讓 ReceiptRasterizer 自己控制 quiet zone。
+        matrix.cropBorder(thickness: 1)
+        return matrix
     }
 
     private static func drawQRMatrix(
@@ -217,8 +230,11 @@ enum ReceiptRasterizer {
         scale: Int
     ) {
         let symbolSize = (matrix.width + quietZoneModules * 2) * scale
-        let symbolX = canvasX + (canvasSize - symbolSize) / 2 + quietZoneModules * scale
-        let symbolY = (canvasSize - symbolSize) / 2 + quietZoneModules * scale
+        // QR 符號（含 quiet zone）應該置中於 canvas 內。
+        // 以前多加一次 quietZone*scale 會把圖案推出 canvas 底部/右側，
+        // 導致 finder pattern 被截斷而印不出 / 掃不到。
+        let symbolX = canvasX + (canvasSize - symbolSize) / 2
+        let symbolY = (canvasSize - symbolSize) / 2
 
         for y in 0..<matrix.height {
             for x in 0..<matrix.width where matrix.isBlack(x: x, y: y) {
@@ -243,18 +259,28 @@ enum ReceiptRasterizer {
             throw invalidError
         }
 
-        var pixels = Array(repeating: UInt8(255), count: width * height)
-        pixels.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else { return }
-            context.render(
-                image,
-                toBitmap: baseAddress,
-                rowBytes: width,
-                bounds: extent,
-                format: .L8,
-                colorSpace: CGColorSpaceCreateDeviceGray()
-            )
+        // 先把 CIImage 轉成 CGImage，再用 CGBitmapContext 畫出灰階 pixel。
+        // 在真機上直接呼叫 CIContext.render(toBitmap:) 到 L8 會靜默失敗，
+        // 導致 pixels 全是 255（全白）。走 CGImage + CGBitmapContext 更穩定。
+        guard let cgImage = context.createCGImage(image, from: extent) else {
+            throw invalidError
         }
+
+        let bytesPerRow = width
+        var pixels = Array(repeating: UInt8(255), count: width * height)
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+        guard let bitmapContext = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: bitmapInfo.rawValue
+        ) else {
+            throw invalidError
+        }
+        bitmapContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
         return MonochromeMatrix(width: width, height: height, pixels: pixels)
     }
 }
@@ -263,6 +289,19 @@ private struct MonochromeMatrix {
     let width: Int
     let height: Int
     let pixels: [UInt8]
+
+    mutating func cropBorder(thickness: Int) {
+        guard thickness > 0, width > thickness * 2, height > thickness * 2 else { return }
+        let newWidth = width - thickness * 2
+        let newHeight = height - thickness * 2
+        var newPixels = Array(repeating: UInt8(255), count: newWidth * newHeight)
+        for y in 0..<newHeight {
+            for x in 0..<newWidth {
+                newPixels[y * newWidth + x] = pixels[(y + thickness) * width + (x + thickness)]
+            }
+        }
+        self = MonochromeMatrix(width: newWidth, height: newHeight, pixels: newPixels)
+    }
 
     func isBlack(x: Int, y: Int) -> Bool {
         pixels[y * width + x] < 128

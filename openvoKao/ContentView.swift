@@ -444,8 +444,8 @@ struct PrintQueueView: View {
     @State private var selectedJob: PrintJob?
     @State private var alert: AppAlert?
     @State private var refreshTask: Task<Void, Never>?
-    @State private var autoPrintTask: Task<Void, Never>?
-    @State private var autoPrintingRemoteIds = Set<String>()
+    @State private var printAllTask: Task<Void, Never>?
+    @State private var printingRemoteIds = Set<String>()
 
     var body: some View {
         NavigationView {
@@ -474,11 +474,45 @@ struct PrintQueueView: View {
                             PrintJobRow(job: job)
                         }
                         .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing) {
+                            Button {
+                                Task {
+                                    await print(job, silent: false)
+                                }
+                            } label: {
+                                Label("列印", systemImage: "printer.fill")
+                            }
+                            .tint(.green)
+                            .disabled(
+                                !printerManager.isPrinterReady
+                                    || printerManager.isPrinting
+                                    || printingRemoteIds.contains(job.remoteId)
+                            )
+                        }
                     }
                 }
             }
             .navigationTitle("列印端")
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task {
+                            await printAll()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "printer.fill")
+                            Text("全部列印")
+                        }
+                    }
+                    .disabled(
+                        store.pendingJobs.isEmpty
+                            || !printerManager.isPrinterReady
+                            || printerManager.isPrinting
+                            || !printingRemoteIds.isEmpty
+                    )
+                }
+
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         startRefreshPendingJobs()
@@ -495,7 +529,7 @@ struct PrintQueueView: View {
             .sheet(item: $selectedJob) { job in
                 PrintJobDetailView(job: job) {
                     Task {
-                        await print(job)
+                        await print(job, silent: false)
                     }
                 }
                 .environmentObject(printerManager)
@@ -505,19 +539,21 @@ struct PrintQueueView: View {
             }
             .task {
                 startRefreshPendingJobs()
-                scheduleAutoPrint()
+                if !printerManager.isPrinterReady, printerManager.savedPrinterId != nil {
+                    printerManager.reconnectSavedPrinter()
+                }
             }
-            .onChange(of: store.pendingJobs) { _ in
-                scheduleAutoPrint()
-            }
-            .onChange(of: printerManager.isPrinterReady) { _ in
-                scheduleAutoPrint()
+            .onChange(of: printerManager.bluetoothState) { newValue in
+                if newValue == "可用" {
+                    guard !printerManager.isPrinterReady, printerManager.savedPrinterId != nil else { return }
+                    printerManager.reconnectSavedPrinter()
+                }
             }
             .onDisappear {
                 refreshTask?.cancel()
                 refreshTask = nil
-                autoPrintTask?.cancel()
-                autoPrintTask = nil
+                printAllTask?.cancel()
+                printAllTask = nil
             }
         }
     }
@@ -533,33 +569,66 @@ struct PrintQueueView: View {
         }
     }
 
-    private func print(_ job: PrintJob) async {
+    private func print(_ job: PrintJob, silent: Bool) async {
+        guard !printingRemoteIds.contains(job.remoteId) else { return }
+        printingRemoteIds.insert(job.remoteId)
+        defer { printingRemoteIds.remove(job.remoteId) }
+
         do {
             store.markSending(job)
             try await printerManager.print(job)
             await store.markPrintedAndReport(job)
             selectedJob = nil
-            alert = AppAlert(title: "已送至印表機", message: job.invoiceNumber)
+            if !silent {
+                alert = AppAlert(title: "已送至印表機", message: job.invoiceNumber)
+            }
         } catch {
             await store.markFailedAndReport(job, message: error.localizedDescription)
-            alert = AppAlert(title: "列印失敗", message: error.localizedDescription)
+            if !silent {
+                alert = AppAlert(title: "列印失敗", message: error.localizedDescription)
+            }
         }
     }
 
-    private func scheduleAutoPrint() {
-        guard printerManager.isPrinterReady else { return }
-        guard autoPrintTask == nil else { return }
+    private func printAll() async {
+        guard printAllTask == nil else { return }
+        let jobs = store.pendingJobs
+        guard !jobs.isEmpty else { return }
 
-        autoPrintTask = Task {
-            defer { autoPrintTask = nil }
-            for job in store.pendingJobs {
-                guard !Task.isCancelled else { return }
-                guard !autoPrintingRemoteIds.contains(job.remoteId) else { continue }
-                autoPrintingRemoteIds.insert(job.remoteId)
-                await print(job)
-                autoPrintingRemoteIds.remove(job.remoteId)
+        printAllTask = Task {
+            defer { printAllTask = nil }
+            var successCount = 0
+            var failedCount = 0
+            var firstError: String?
+
+            for (index, job) in jobs.enumerated() {
+                guard !Task.isCancelled else { break }
+                await print(job, silent: true)
+                let currentStatus = store.printJobs.first(where: { $0.remoteId == job.remoteId })?.status
+                if currentStatus == .printed {
+                    successCount += 1
+                } else {
+                    failedCount += 1
+                    if firstError == nil {
+                        firstError = store.printJobs.first(where: { $0.remoteId == job.remoteId })?.lastMessage
+                    }
+                }
+
+                if index < jobs.count - 1 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
             }
+
+            let message: String
+            if failedCount == 0 {
+                message = "已完成 \(successCount) 筆列印"
+            } else {
+                message = "已完成 \(successCount) 筆，失敗 \(failedCount) 筆\n\(firstError ?? "")"
+            }
+            alert = AppAlert(title: "批次列印完成", message: message)
         }
+
+        await printAllTask?.value
     }
 }
 

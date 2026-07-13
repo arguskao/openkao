@@ -39,7 +39,7 @@ struct PrinterSettingsView: View {
                     .disabled(printerManager.savedPrinterId == nil)
 
                     Button {
-                        printerManager.testPrint()
+                        printerManager.testPrintGuangMaoReference()
                     } label: {
                         Label("測試列印", systemImage: "printer")
                     }

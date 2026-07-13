@@ -23,3 +23,6 @@ dist/
 
 # Logs
 *.log
+
+# 光貿 base64 列印資料解析目錄
+光貿base64解析P5_P201A_USB/

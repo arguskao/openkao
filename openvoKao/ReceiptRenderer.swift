@@ -44,14 +44,15 @@ struct ReceiptRenderer {
         switch (job.leftQRCodePayload, job.rightQRCodePayload) {
         case let (left?, right?) where !left.isEmpty && !right.isEmpty:
             data.appendLine("")
-            data.append(contentsOf: ESC.alignLeft)
+            data.append(contentsOf: ESC.defaultLineSpacing)
             data.append(contentsOf: ESC.leftMargin(points: ReceiptLayout.qrLeftMarginDots))
+            data.append(contentsOf: ESC.cancelPrintModes)
+            data.append(contentsOf: ESC.alignLeft)
             data.appendRasterImage(
                 try ReceiptRasterizer.dualQRCode(
                     leftPayload: left,
                     rightPayload: right
-                ),
-                maximumRowsPerCommand: 50
+                )
             )
             data.append(contentsOf: ESC.leftMargin(points: 0))
         case (nil, nil), ("", ""):
@@ -66,10 +67,11 @@ struct ReceiptRenderer {
 
         data.append(contentsOf: ESC.alignLeft)
         data.appendLine(rule())
-        if let sellerName = job.sellerName, !sellerName.isEmpty {
-            data.appendLine(sellerName)
-            data.appendLine("")
-        }
+        data.append(contentsOf: ESC.alignCenter)
+        data.appendLine("銷貨明細單")
+        data.append(contentsOf: ESC.alignLeft)
+        data.appendLine(DateFormatter.receiptDate.string(from: job.issuedAt))
+        data.appendLine("")
         data.appendLine(itemHeader(for: job))
 
         for item in job.items {
@@ -243,6 +245,8 @@ private enum ESC {
     static let emphasisOn: [UInt8] = [0x1B, 0x45, 0x01]
     static let emphasisOff: [UInt8] = [0x1B, 0x45, 0x00]
     static let selectChineseCharacterMode: [UInt8] = [0x1C, 0x26]
+    static let cancelPrintModes: [UInt8] = [0x1B, 0x21, 0x00]
+    static let defaultLineSpacing: [UInt8] = [0x1B, 0x33, 0x1E]
 
     static func feed(points: UInt8) -> [UInt8] {
         [0x1B, 0x4A, points]

@@ -126,18 +126,16 @@ final class PrinterManager: NSObject, ObservableObject {
         statusMessage = "已清除印表機設定"
     }
 
-    func testPrint() {
+    func testPrintGuangMaoReference() {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let bytes: [UInt8] = [
-                0x1B, 0x40,
-                0x54, 0x45, 0x53, 0x54, 0x20, 0x50, 0x52, 0x49, 0x4E, 0x54,
-                0x0A, 0x0A, 0x0A,
-                0x1B, 0x4A, 0x64
-            ]
+            guard let data = Data(base64Encoded: GuangMaoReferencePayload.base64String) else {
+                statusMessage = "光貿參考 base64 解碼失敗"
+                return
+            }
 
             do {
-                try await send(Data(bytes), label: "測試列印")
+                try await send(data, label: "光貿參考列印")
             } catch {
                 statusMessage = error.localizedDescription
             }
@@ -174,7 +172,9 @@ final class PrinterManager: NSObject, ObservableObject {
             throw PrinterError.unsupportedCharacteristic
         }
 
-        let chunkSize = max(1, min(peripheral.maximumWriteValueLength(for: writeType), 120))
+        // 光貿 BLE 腳本使用 64-byte chunk，對熱感印表機最穩定；
+        // 保留原本的 write-type 選擇，避免 unsupported characteristic 錯誤。
+        let chunkSize = 64
         let chunks = stride(from: 0, to: data.count, by: chunkSize).map { start -> Data in
             let end = min(start + chunkSize, data.count)
             return data.subdata(in: start..<end)
