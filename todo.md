@@ -1,6 +1,6 @@
 # OpenvoKao 產品里程碑
 
-更新日期：2026-07-11
+更新日期：2026-07-13
 
 這份文件只保留產品方向與里程碑。工程風險、驗收清單與逐項進度放在 `todo2.md`。
 
@@ -20,7 +20,7 @@ iOS 不保存 Amego App Key，也不直接管理商品主資料。Amego 憑證�
 - [x] 建立待列印、印表機、紀錄、設定等主要畫面。
 - [x] BLE 掃描、連線、保存印表機設定、重新連線。
 - [x] ESC/POS 發票 renderer。
-- [x] 支援 58mm / 80mm 紙寬設定。
+- [x] 列印版面固定支援 58mm 紙寬，不提供 80mm 模式。
 - [x] 支援 pending job 同步、列印成功/失敗回報、失敗 outbox 重試。
 - [ ] 實機確認不同熱感紙機型的中文、QR code、barcode、切紙與走紙相容性。
 
@@ -50,7 +50,7 @@ iOS 不保存 Amego App Key，也不直接管理商品主資料。Amego 憑證�
 - [x] 多台 iPhone 同時刷新時，只能有一台 claim 同一筆任務。
 - [x] printed / failed callback 具備狀態機防護。
 - [x] 建立 audit log 與 request log。
-- [ ] 串接正式 Amego 開票 API。
+- [x] 串接 Amego 正式開票、補查與作廢 API，App Key 只由後端從 D1 讀取。
 - [ ] 用正式財政部測試資料驗證 QR code、條碼、期別、總額與統編。
 
 ## 里程碑 5：業績、報表與管理功能
@@ -70,12 +70,12 @@ iOS 不保存 Amego App Key，也不直接管理商品主資料。Amego 憑證�
 - [x] Cloudflare observability、request ID、結構化 log。
 - [x] Git 忽略 `.ipa`、Xcode user state、`.DS_Store`、DerivedData、Wrangler 本機 state。
 - [ ] 建立正式 staging / production Worker environment、不同 D1 與不同 secrets。
-- [ ] 將 binary artifact 改由 release 或 artifact storage 管理。
+- [x] Binary artifact 不納入 Git；CI 使用 artifact 保存 unsigned simulator app。
 
 ## 發布前必做
 
 - [ ] 供應商端確認曾出現在程式碼中的 App Key 是否需要撤銷或輪替。
-- [ ] 正式 Amego API 串接與錯誤情境測試。
+- [x] Amego API 串接與成功、拒絕、HTTP 錯誤、逾時及回應不完整測試。
 - [ ] 正式財政部測試資料驗證。
 - [ ] 至少兩台 iPhone 同時搶同一筆列印任務的實機測試。
 - [ ] 不同印表機型號實機測試。

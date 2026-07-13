@@ -1,6 +1,6 @@
 # OpenvoKao 程式碼優化 TODO 2
 
-更新日期：2026-07-11
+更新日期：2026-07-13
 
 ## 審查結論
 
@@ -9,15 +9,16 @@
 ## 目前剩餘重點
 
 - 外部確認：若舊 App Key 曾經是真實可用憑證，需在供應商端撤銷或輪替。
-- 發票正式性：需用財政部或正式測試資料驗證 QR code、條碼、期別、總額與統編。
-- 維護性：Worker 主檔已拆出多個模組，但 `catalog / invoices / print-jobs / reports / db` 還可逐步拆出。
+- 發票正式性：Amego 正式開票流程已完成；仍需完成實體 QRCode／條碼列印與掃描驗收。
+- 實機相容性：目前 PDF 與 QR 點陣資料正常，但特定 58mm 藍牙印表機曾只走紙而未印出 QRCode；最新版已改為分段點陣傳輸，待實機複驗。
+- 維護性：Worker 已拆至目前可接受範圍，暫不繼續為拆分而拆分。
 
 ## 已驗證的基線
 
 - [x] `npm run typecheck` 通過。
 - [x] iOS Debug／iPhoneOS、iOS 15 deployment target、停用簽章 build、實機簽章 build 通過。
 - [x] `wrangler deploy --dry-run` 通過，Worker bundle 可產生。
-- [x] D1 `0001`～`0023` migration 可在 `/tmp` 的全新本機資料庫依序套用成功。
+- [x] D1 `0001`～`0025` migration 可從全新本機資料庫與既有 fixture 依序套用成功。
 - [x] 已補 iOS unit test、Worker 自動化測試與 CI gate。
 - [x] migration 已驗證空庫與「已有公司、帳號、商品、發票、列印紀錄」fixture 升級後資料仍完整。
 
@@ -61,10 +62,10 @@
 - [x] Big5 fallback 應先把不支援字元替換，再把整段安全字串編碼成 Big5；目前只要有一個 emoji，整行中文就會改送 UTF-8。證據：`openvoKao/ReceiptRenderer.swift:118-131`
 - [x] `twoColumn` 在左右文字超過紙寬時要截斷或換行，不能直接溢出。證據：`openvoKao/ReceiptRenderer.swift:95-102`
 - [x] 對 QR payload 長度設上限並安全計算 ESC/POS 長度欄位，避免轉成 `UInt8` 時越界。證據：`openvoKao/ReceiptRenderer.swift:133-142`
-- [x] 58mm／80mm 必須成為可保存的使用者設定；目前實際列印固定 `.mm58`。證據：`openvoKao/PrinterManager.swift:136-138`
+- [x] 依產品決策只支援固定 58mm 版面，不保留 80mm 設定或分支。
 - [ ] 用正式財政部測試資料驗證 QR code、條碼、期別、總額與統編，不以 demo 字串作為完成標準。
 
-驗收：跨年、每個雙月邊界、emoji／罕見字、超長品名、58mm／80mm 都有 renderer golden test。
+驗收：跨年、每個雙月邊界、emoji／罕見字、超長品名與 58mm 版面都有 renderer test；實體條碼與 QRCode 另做硬體驗收。
 
 ### 4. 移除並輪替可能已洩漏的 App Key
 
@@ -235,10 +236,10 @@ TypeScript generic 只在編譯期存在；`request.json()` 可傳入 `null`、a
 
 1. 先用目前實機流程做整套人工驗收：登入、解除綁定、商品同步、列印、失敗回報、離線重試。
 2. 確認舊 App Key 是否曾經是真實憑證；若是，先在供應商端撤銷或輪替。
-3. 用正式財政部測試資料驗證 QR code、條碼、期別、總額與統編。
-4. 再串正式 Amego 開票 API，並把 API key 僅保留在後端資料庫／secret 管理內。
-5. 產品正式上線前，再評估是否需要 staging／production D1 分離。
-6. 有餘裕時繼續拆 Worker 主檔，優先拆 `catalog / invoices / print-jobs / reports / db`。
+3. 用最新版分段點陣傳輸補印，確認實體 QRCode 出現後可掃描，並比對 D1 保存內容。
+4. 使用條碼掃描器或手機確認 Code128 內容與 Amego `barcode` 一致。
+5. 完成整套產品 UI、App Store 身分與至少第二款 58mm 印表機驗收。
+6. 產品正式上線前，再評估是否需要 staging／production D1 分離。
 
 ## 完成標準
 

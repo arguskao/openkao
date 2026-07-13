@@ -1,6 +1,6 @@
 # OpenvoKao TODO 3：Amego 開票資料與發票列印
 
-更新日期：2026-07-12
+更新日期：2026-07-13
 
 ## 重要結論
 
@@ -23,8 +23,10 @@ OpenKao 不是電子發票加值中心，不自行產生財政部 QRCode 的 AES
 - [x] `base64_data` 是依 `PrinterType` 產生的印表機指令資料，不是 PNG、JPG 或 QRCode 原始字串。
 - [x] Amego 的 `PrinterLang` 可指定印表機文字編碼；目前大陸印表機應使用 GBK 設定。
 - [x] `openvoice` 直接解碼 `base64_data` 後送進印表機，因此舊版發票上的條碼與雙 QRCode 都由 Amego 的列印資料產生。
-- [x] `openkao` 目前 iOS `ReceiptRenderer` 仍只列印一個 `qrCodePayload`，一維條碼則使用 Code128。
-- [x] `openkao` 後端目前已保存公司 Amego 開票號碼與 App Key，但尚未完成正式的 Amego 開票流程。
+- [x] `openkao` iOS `ReceiptRenderer` 已使用 Amego 的左右 QRCode payload 合成同一張點陣圖，一維條碼使用 Code128。
+- [x] `openkao` 後端已完成 Amego 正式開票、缺欄位補查、補印與作廢流程，App Key 從 D1 公司設定讀取。
+- [x] PDF 與獨立點陣驗證可產生包含黑點的雙 QRCode；實體 58mm 印表機曾保留圖高但未印出黑點，問題已縮小到 ESC/POS／藍牙／機芯相容性。
+- [ ] 以最新版 `336 x 150` 合成圖、23 點左邊界及三段 `336 x 50` 傳輸重新做實體補印驗證。
 
 ## 資料責任
 
@@ -116,7 +118,7 @@ OpenKao 不是電子發票加值中心，不自行產生財政部 QRCode 的 AES
 - [x] 依目前印表機相容性需求選用 Code128；實體印表機掃描驗收仍列在 P4。
 - [x] 不依賴各印表機品質不一的內建條碼指令，改由 iOS 產生固定模組寬度、高度與 quiet zone 的黑白點陣圖。
 - [x] 條碼圖片不經列印驅動縮放，避免線寬不均造成無法掃描。
-- [x] 條碼下方顯示與 Amego `barcode` 相同的人眼可讀文字。
+- [ ] 條碼下方顯示與 Amego `barcode` 相同的人眼可讀文字；目前 renderer 只印點陣條碼。
 
 ### D. 列印模式
 
@@ -145,11 +147,10 @@ OpenKao 不是電子發票加值中心，不自行產生財政部 QRCode 的 AES
 
 ## 建議執行順序
 
-1. 先完成 P0，移除目前錯誤的自行產生 QRCode 路線。
-2. 完成 P1，讓後端真正向 Amego 開票並保存官方 payload。
-3. 完成 P2，讓手機列印 Amego 的雙 QRCode 與一維條碼。
-4. 完成 P3 的查詢、補印與作廢流程。
-5. 最後完成 P4 的 PDF 預覽與實體印表機驗收。
+1. 先用最新版補印，確認三段式 `GS v 0` 能在目前 58mm 印表機印出完整雙 QRCode。
+2. 掃描左右 QRCode 並逐字比對 D1 的 `qrcode_left`、`qrcode_right`。
+3. 掃描 Code128 並比對 Amego `barcode`；決定是否補印條碼下方的人眼文字。
+4. 至少再用第二款 58mm 印表機完成相同驗收。
 
 ## 驗收標準
 
