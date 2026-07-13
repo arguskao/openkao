@@ -126,16 +126,13 @@ final class PrinterManager: NSObject, ObservableObject {
         statusMessage = "已清除印表機設定"
     }
 
-    func testPrintGuangMaoReference() {
+    func testPrint() {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let data = Data(base64Encoded: GuangMaoReferencePayload.base64String) else {
-                statusMessage = "光貿參考 base64 解碼失敗"
-                return
-            }
 
             do {
-                try await send(data, label: "光貿參考列印")
+                let data = try ReceiptRenderer().renderTestPrint()
+                try await send(data, label: "測試列印")
             } catch {
                 statusMessage = error.localizedDescription
             }

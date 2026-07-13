@@ -175,6 +175,18 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertThrowsError(try ReceiptRenderer().render(job: job))
     }
 
+    func testTestPrintContainsTitleBarcodeAndDualQr() throws {
+        let data = try ReceiptRenderer().renderTestPrint()
+
+        XCTAssertTrue(data.containsGBKText("電子發票證明聯"))
+        XCTAssertTrue(data.containsBytes([
+            0x1B, 0x45, 0x01,
+            0x1D, 0x21, 0x11,
+            0x1C, 0x21, 0x0C
+        ]))
+        XCTAssertTrue(data.containsBytes([0x1D, 0x76, 0x30, 0x00]))
+    }
+
 
     private func makeJob() -> PrintJob {
         PrintJob(

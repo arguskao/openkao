@@ -99,6 +99,46 @@ struct ReceiptRenderer {
         return data
     }
 
+    func renderTestPrint() throws -> Data {
+        var data = Data()
+        data.append(contentsOf: ESC.initialize)
+        data.append(contentsOf: ESC.selectChineseCharacterMode)
+        data.append(contentsOf: ESC.alignCenter)
+        data.append(contentsOf: ESC.emphasisOn)
+        data.append(contentsOf: ESC.doubleSize)
+        data.appendLine("電子發票證明聯")
+        data.append(contentsOf: ESC.normalSize)
+        data.append(contentsOf: ESC.emphasisOff)
+
+        data.appendLine("")
+        data.append(contentsOf: ESC.alignCenter)
+        data.appendRasterImage(try ReceiptRasterizer.code128(payload: Self.testBarcodePayload))
+
+        data.appendLine("")
+        data.append(contentsOf: ESC.defaultLineSpacing)
+        data.append(contentsOf: ESC.leftMargin(points: ReceiptLayout.qrLeftMarginDots))
+        data.append(contentsOf: ESC.cancelPrintModes)
+        data.append(contentsOf: ESC.alignLeft)
+        data.appendRasterImage(
+            try ReceiptRasterizer.dualQRCode(
+                leftPayload: Self.testLeftQRCodePayload,
+                rightPayload: Self.testRightQRCodePayload
+            )
+        )
+        data.append(contentsOf: ESC.leftMargin(points: 0))
+
+        data.append(contentsOf: ESC.alignLeft)
+        data.appendLine("")
+        data.appendLine("")
+        data.append(contentsOf: ESC.feed(points: 255))
+        data.append(contentsOf: ESC.feed(points: 255))
+        return data
+    }
+
+    private static let testBarcodePayload = "AD1234563159221130326"
+    private static let testLeftQRCodePayload = "AD12345631592211303260000021000000021000000001234567890657484LEFTQRCODETEST"
+    private static let testRightQRCodePayload = "**TESTRIGHTQRCODEPAYLOAD:2:2:1:甘寧:1:2400:會員折扣:1:-300:SELLER12345678BUYER90657484END"
+
     private func appendItem(_ item: PrintJobItem, to data: inout Data) {
         let name = item.name.receiptGBKSafeText
         let quantity = "\(item.quantity)"
