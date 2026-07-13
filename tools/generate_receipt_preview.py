@@ -10,7 +10,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 
 
-OUTPUT = Path("output/pdf/openkao-58mm-invoice-preview.pdf")
 PAGE_WIDTH = 58 * mm
 PAGE_HEIGHT = 190 * mm
 CONTENT_WIDTH = 50 * mm
@@ -37,21 +36,20 @@ def draw_qr(pdf, x, y, size, payload):
     renderPDF.draw(drawing, pdf, x, y)
 
 
-def main():
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    pdfmetrics.registerFont(TTFont(FONT, FONT_PATH, subfontIndex=0))
-    pdf = canvas.Canvas(str(OUTPUT), pagesize=(PAGE_WIDTH, PAGE_HEIGHT))
+def _base_page(pdf, seller_name, invoice_number, has_buyer):
     y = PAGE_HEIGHT - 8 * mm
-
-    centered_text(pdf, y, "嘉萱漢方有限公司", 7)
+    centered_text(pdf, y, seller_name, 7)
     y -= 8 * mm
     centered_text(pdf, y, "電子發票證明聯", MIN_MAJOR_FONT)
     y -= 8 * mm
     centered_text(pdf, y, "115年07-08月", MIN_MAJOR_FONT)
     y -= 9 * mm
-    centered_text(pdf, y, "AB-12345678", 18, "Helvetica-Bold")
+    centered_text(pdf, y, invoice_number, 18, "Helvetica-Bold")
     y -= 7 * mm
-    centered_text(pdf, y, "2026-07-12 15:30:00    格式:25", MIN_BODY_FONT)
+    if has_buyer:
+        centered_text(pdf, y, "2026-07-12 15:30:00    格式:25", MIN_BODY_FONT)
+    else:
+        centered_text(pdf, y, "2026-07-12 15:30:00", MIN_BODY_FONT)
     y -= 5 * mm
 
     pdf.setFont(FONT, 7)
@@ -59,8 +57,12 @@ def main():
     pdf.drawRightString(CONTENT_RIGHT, y, "總計 135")
     y -= 5 * mm
     pdf.drawString(CONTENT_LEFT, y, "賣方:12345678")
-    pdf.drawRightString(CONTENT_RIGHT, y, "買方:03741302")
+    if has_buyer:
+        pdf.drawRightString(CONTENT_RIGHT, y, "買方:03741302")
+    return y - 8 * mm
 
+
+def _draw_barcodes(pdf, y):
     barcode_value = "11508AB123456781234"
     barcode = code128.Code128(barcode_value, barWidth=0.25 * mm, barHeight=16 * mm, quiet=True)
     barcode_y = y - 20 * mm
@@ -85,11 +87,15 @@ def main():
         qr_size,
         "**AMEGORIGHTPAYLOAD:2:2:1:加蛋:3:15:繁體中文奶茶:2:45",
     )
+    return qr_y - 4 * mm
 
-    y = qr_y - 4 * mm
+
+def _draw_items(pdf, y, has_buyer):
     pdf.setLineWidth(0.4)
     pdf.line(CONTENT_LEFT, y, CONTENT_RIGHT, y)
     y -= 5 * mm
+    centered_text(pdf, y, "銷貨明細單", 8)
+    y -= 6 * mm
     pdf.setFont(FONT, 7)
     pdf.drawString(CONTENT_LEFT, y, "嘉萱漢方有限公司")
     y -= 8 * mm
@@ -108,20 +114,57 @@ def main():
     pdf.drawString(29 * mm, y, "2")
     pdf.drawString(38 * mm, y, "45")
     pdf.drawRightString(CONTENT_RIGHT, y, "90")
-    y -= 10 * mm
-    pdf.setFont(FONT, 9)
-    pdf.drawString(CONTENT_LEFT, y, "銷售額(應稅)")
-    pdf.drawRightString(CONTENT_RIGHT, y, "129")
-    y -= 7 * mm
-    pdf.drawString(CONTENT_LEFT, y, "稅額")
-    pdf.drawRightString(CONTENT_RIGHT, y, "6")
-    y -= 7 * mm
-    pdf.drawString(CONTENT_LEFT, y, "總計")
-    pdf.drawRightString(CONTENT_RIGHT, y, "135")
 
+    if has_buyer:
+        y -= 10 * mm
+        pdf.setFont(FONT, 9)
+        pdf.drawString(CONTENT_LEFT, y, "銷售額(應稅)")
+        pdf.drawRightString(CONTENT_RIGHT, y, "129")
+        y -= 7 * mm
+        pdf.drawString(CONTENT_LEFT, y, "稅額")
+        pdf.drawRightString(CONTENT_RIGHT, y, "6")
+        y -= 7 * mm
+        pdf.drawString(CONTENT_LEFT, y, "總計")
+        pdf.drawRightString(CONTENT_RIGHT, y, "135")
+    else:
+        y -= 8 * mm
+        pdf.setLineWidth(0.4)
+        pdf.line(CONTENT_LEFT, y, CONTENT_RIGHT, y)
+        y -= 7 * mm
+        pdf.setFont(FONT, 9)
+        pdf.drawString(CONTENT_LEFT, y, "總計")
+        pdf.drawRightString(CONTENT_RIGHT, y, "135")
+        y -= 7 * mm
+        pdf.drawString(CONTENT_LEFT, y, "課稅別")
+        pdf.drawRightString(CONTENT_RIGHT, y, "TX")
+
+
+def generate_invoice_preview(path, seller_name, invoice_number, has_buyer):
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pdfmetrics.registerFont(TTFont(FONT, FONT_PATH, subfontIndex=0))
+    pdf = canvas.Canvas(str(output), pagesize=(PAGE_WIDTH, PAGE_HEIGHT))
+    y = _base_page(pdf, seller_name, invoice_number, has_buyer)
+    y = _draw_barcodes(pdf, y)
+    _draw_items(pdf, y, has_buyer)
     pdf.showPage()
     pdf.save()
-    print(OUTPUT)
+    print(output)
+
+
+def main():
+    generate_invoice_preview(
+        "output/pdf/openkao-58mm-invoice-preview.pdf",
+        seller_name="嘉萱漢方有限公司",
+        invoice_number="AB-12345678",
+        has_buyer=True,
+    )
+    generate_invoice_preview(
+        "output/pdf/openvokao_receipt_gbk_sample.pdf",
+        seller_name="OpenvoKao 代刷",
+        invoice_number="AB12345678",
+        has_buyer=False,
+    )
 
 
 if __name__ == "__main__":
