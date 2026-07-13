@@ -32,7 +32,10 @@
 
 在 iPhone 6s Plus 等實機上列印時，曾發現 QR code 區塊整片空白（或只剩 finder pattern 殘影）。分析後發現問題不在 ESC/POS 指令本身，而在 **CoreImage → 光柵 bitmap 的轉換路徑**。
 
-1. **直接對 `CIImage` 呼叫 `CIContext.render(toBitmap:)` 到 L8 灰階格式，在真機上會靜默失敗**，回傳的 pixel buffer 全部為 `255`（全白），導致後續送進印表機的 QR 圖像根本沒有黑點。
+1. **不是 A 系列 SoC 性能瓶頸，而是 CoreImage 的 bitmap 格式相容性問題。**
+   - `CIQRCodeGenerator` 產出的 `CIImage` 是 lazy/referenced 影像，本身沒有 backing bitmap；必須經過 `CIContext` 渲染才會產生真正的像素。
+   - `CIContext.render(_:toBitmap:rowBytes:bounds:format:colorSpace:)` 對 `kCIFormatL8` 這類非 RGBA8 格式的支援，在不同 iOS 版本與裝置上並不一致，經常靜默失敗並留下全白（`255`）buffer。Apple Core Image 工程師亦曾在 Stack Overflow 上指出 `render(toBitmap:)` 對特定 CIFormat 的 rowBytes 與執行環境有嚴格限制（例如 iOS Simulator 不支援某些格式），而真機上 L8 灰階路徑同樣被許多開發者回報會得到空白或異常結果。
+   - 因此，直接對 `CIImage` 走 L8 `render(toBitmap:)` 會讓 QR 圖像失去所有黑點，印表機收到的是一塊全白光柵。
 2. 修正方式改為：
    - `CIContext.createCGImage(_:from:)` 先產生穩定的 `CGImage`。
    - 再用 `CGBitmapContext`（Gray color space、每像素 8 bit）把 `CGImage` 畫進 memory buffer。
@@ -63,3 +66,10 @@
 - `openvoKao/ContentView.swift`：`PrintQueueView` 與全部列印流程。
 - `openvoKao/PrinterManager.swift`：BLE 傳送與 chunk 管理，已移除 dump。
 - `openvoKaoTests/ReceiptRendererTests.swift`：已移除會寫入 `/tmp` 的偵錯測試。
+
+## 參考來源
+
+- [Stack Overflow: How to make use of kCIFormatRGBAh to get half floats on iOS with Core Image?](https://stackoverflow.com/questions/28416330/how-to-make-use-of-kciformath-to-get-half-floats-on-ios-with-core-image) — Apple Core Image 工程師說明 `render(toBitmap:)` 對特定 CIFormat 與環境的限制。
+- [Stack Overflow: Swift - Image Data From CIImage QR Code / How to render CIFilter Output](https://stackoverflow.com/questions/51178573/swift-image-data-from-ciimage-qr-code-how-to-render-cifilter-output) — 說明 `CIImage` 需經 `CIContext.createCGImage()` 才能取得可靠 bitmap。
+- [Stack Overflow: Converting a large CIImage to CGImage is rendered white](https://stackoverflow.com/questions/69628639/converting-a-large-ciimage-to-cgimage-is-rendered-white) — 實際案例：CoreImage 輸出在特定轉換條件下會變全白。
+- [Microsoft Learn: CIFormat Enum (CoreImage)](https://learn.microsoft.com/en-us/dotnet/api/coreimage.ciformat) — CIFormat 格式清單，含 `L8` 定義。
