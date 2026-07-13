@@ -34,6 +34,8 @@ final class PrinterManager: NSObject, ObservableObject {
     private var currentPrintChunkIndex = 0
     private var currentWriteType: CBCharacteristicWriteType?
     private var isAwaitingWriteResponse = false
+    private var withoutResponseBurstCount = 0
+    private var scheduledWritePump: DispatchWorkItem?
     private var currentPrintLabel: String?
     private var backgroundObserver: NSObjectProtocol?
 
@@ -172,10 +174,7 @@ final class PrinterManager: NSObject, ObservableObject {
         // 光貿 BLE 腳本使用 64-byte chunk，對熱感印表機最穩定；
         // 保留原本的 write-type 選擇，避免 unsupported characteristic 錯誤。
         let chunkSize = 64
-        let chunks = stride(from: 0, to: data.count, by: chunkSize).map { start -> Data in
-            let end = min(start + chunkSize, data.count)
-            return data.subdata(in: start..<end)
-        }
+        let chunks = ESCPosPacketizer.chunks(from: data, maximumSize: chunkSize)
 
         isPrinting = true
         currentPrintLabel = label
@@ -183,6 +182,9 @@ final class PrinterManager: NSObject, ObservableObject {
         currentPrintChunkIndex = 0
         currentWriteType = writeType
         isAwaitingWriteResponse = false
+        withoutResponseBurstCount = 0
+        scheduledWritePump?.cancel()
+        scheduledWritePump = nil
         statusMessage = "傳送中：\(label)"
 
         try await withCheckedThrowingContinuation { continuation in
@@ -203,6 +205,7 @@ final class PrinterManager: NSObject, ObservableObject {
 
     private func pumpWriteQueue() {
         guard currentPrintContinuation != nil else { return }
+        guard scheduledWritePump == nil else { return }
         guard let peripheral = connectedPeripheral,
               let characteristic = printCharacteristic,
               let writeType = currentWriteType else {
@@ -229,10 +232,10 @@ final class PrinterManager: NSObject, ObservableObject {
                 let chunk = currentPrintChunks[currentPrintChunkIndex]
                 peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
                 currentPrintChunkIndex += 1
-                if currentPrintChunkIndex.isMultiple(of: 2) {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
-                        self.pumpWriteQueue()
-                    }
+                withoutResponseBurstCount += 1
+                if withoutResponseBurstCount >= 2, currentPrintChunkIndex < currentPrintChunks.count {
+                    withoutResponseBurstCount = 0
+                    scheduleWritePump(after: 0.04)
                     return
                 }
             }
@@ -242,6 +245,17 @@ final class PrinterManager: NSObject, ObservableObject {
         }
     }
 
+    private func scheduleWritePump(after delay: TimeInterval) {
+        guard scheduledWritePump == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            scheduledWritePump = nil
+            pumpWriteQueue()
+        }
+        scheduledWritePump = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
     private func finishCurrentPrint(with result: Result<Void, Error>) {
         let continuation = currentPrintContinuation
         currentPrintContinuation = nil
@@ -249,6 +263,9 @@ final class PrinterManager: NSObject, ObservableObject {
         currentPrintChunkIndex = 0
         currentWriteType = nil
         isAwaitingWriteResponse = false
+        withoutResponseBurstCount = 0
+        scheduledWritePump?.cancel()
+        scheduledWritePump = nil
         currentPrintLabel = nil
         isPrinting = false
 

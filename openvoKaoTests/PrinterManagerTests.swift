@@ -3,6 +3,39 @@ import XCTest
 @testable import openvoKao
 
 final class PrinterManagerTests: XCTestCase {
+    func testPacketizerDoesNotSplitGBKCharacterAtPacketBoundary() {
+        var data = Data(repeating: 0x41, count: 63)
+        data.append(contentsOf: [0xD4, 0xC2])
+        data.append(0x42)
+
+        let chunks = ESCPosPacketizer.chunks(from: data, maximumSize: 64)
+
+        XCTAssertEqual(chunks.map(\.count), [63, 3])
+        XCTAssertEqual(Array(chunks[1].prefix(2)), [0xD4, 0xC2])
+        XCTAssertEqual(chunks.reduce(into: Data(), { $0.append($1) }), data)
+    }
+
+    func testPacketizerKeepsRasterHeaderWithFirstImageByte() {
+        var data = Data(repeating: 0x41, count: 56)
+        data.append(contentsOf: [
+            0x1D, 0x76, 0x30, 0x00,
+            0x02, 0x00,
+            0x02, 0x00,
+            0xAA, 0xBB, 0xCC, 0xDD
+        ])
+
+        let chunks = ESCPosPacketizer.chunks(from: data, maximumSize: 64)
+
+        XCTAssertEqual(chunks.map(\.count), [56, 12])
+        XCTAssertEqual(Array(chunks[1].prefix(9)), [
+            0x1D, 0x76, 0x30, 0x00,
+            0x02, 0x00,
+            0x02, 0x00,
+            0xAA
+        ])
+        XCTAssertEqual(chunks.reduce(into: Data(), { $0.append($1) }), data)
+    }
+
     func testChunksDataByTransportLimit() async throws {
         let transport = FakePrinterTransport(maximumChunkSize: 3)
         try await PrinterWritePipeline().send(Data([1, 2, 3, 4, 5, 6, 7]), transport: transport)
