@@ -32,10 +32,10 @@
 
 在 iPhone 6s Plus 等實機上列印時，曾發現 QR code 區塊整片空白（或只剩 finder pattern 殘影）。分析後發現問題不在 ESC/POS 指令本身，而在 **CoreImage → 光柵 bitmap 的轉換路徑**。
 
-1. **不是 A 系列 SoC 性能瓶頸，而是 CoreImage 的 bitmap 格式相容性問題。**
-   - `CIQRCodeGenerator` 產出的 `CIImage` 是 lazy/referenced 影像，本身沒有 backing bitmap；必須經過 `CIContext` 渲染才會產生真正的像素。
-   - `CIContext.render(_:toBitmap:rowBytes:bounds:format:colorSpace:)` 對 `kCIFormatL8` 這類非 RGBA8 格式的支援，在不同 iOS 版本與裝置上並不一致，經常靜默失敗並留下全白（`255`）buffer。Apple Core Image 工程師亦曾在 Stack Overflow 上指出 `render(toBitmap:)` 對特定 CIFormat 的 rowBytes 與執行環境有嚴格限制（例如 iOS Simulator 不支援某些格式），而真機上 L8 灰階路徑同樣被許多開發者回報會得到空白或異常結果。
-   - 因此，直接對 `CIImage` 走 L8 `render(toBitmap:)` 會讓 QR 圖像失去所有黑點，印表機收到的是一塊全白光柵。
+1. **直接原因是 iOS CoreImage 在 `CIContext.render(_:toBitmap:)` 的 L8 灰階路徑上有 bug。**
+   - `CIQRCodeGenerator` 產出的 `CIImage` 本身沒有 backing bitmap，必須經過 `CIContext` 渲染才會得到像素。
+   - 呼叫 `CIContext.render(_:toBitmap:rowBytes:bounds:format:colorSpace:)` 指定 `kCIFormatL8` 時，iOS 會靜默失敗，回傳的 pixel buffer 全部為 `255`（全白）。Apple 工程師曾在 Stack Overflow 承認 `render(toBitmap:)` 對特定 CIFormat 的支援有限制，而社群也有大量回報指出 L8 在真機與模擬器上都會產生空白/異常結果。
+   - 換句話說：不是 A 系列 SoC 效能問題，而是這條 API 在 iOS 上沒寫好。
 2. 修正方式改為：
    - `CIContext.createCGImage(_:from:)` 先產生穩定的 `CGImage`。
    - 再用 `CGBitmapContext`（Gray color space、每像素 8 bit）把 `CGImage` 畫進 memory buffer。
