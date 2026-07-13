@@ -28,6 +28,20 @@
 - [x] 移除 `dumpPrintData(_:label:)` 與 `findRasterImageRange(in:)`，不再於每次列印時寫入 `.bin` / `.hex.txt`。
 - [x] 移除單元測試中會把資料寫進 `/tmp/openvoKao_dumps` 的偵錯測試，避免測試也產生垃圾檔案。
 
+## QR code 空白問題的根因
+
+在 iPhone 6s Plus 等實機上列印時，曾發現 QR code 區塊整片空白（或只剩 finder pattern 殘影）。分析後發現問題不在 ESC/POS 指令本身，而在 **CoreImage → 光柵 bitmap 的轉換路徑**。
+
+1. **直接對 `CIImage` 呼叫 `CIContext.render(toBitmap:)` 到 L8 灰階格式，在真機上會靜默失敗**，回傳的 pixel buffer 全部為 `255`（全白），導致後續送進印表機的 QR 圖像根本沒有黑點。
+2. 修正方式改為：
+   - `CIContext.createCGImage(_:from:)` 先產生穩定的 `CGImage`。
+   - 再用 `CGBitmapContext`（Gray color space、每像素 8 bit）把 `CGImage` 畫進 memory buffer。
+   - 最後將 threshold < 128 的 pixel 視為黑色，轉成 `ESCPosRasterImage`。
+3. 左右雙 QR 因資料長度不同，原始 matrix 寬度也不同。若用相同 scale 縮放，版本較小的 QR 會被縮得太小，因此改為 **分別計算各自 scale**，讓左右兩個 QR 都盡量填滿各自的 canvas，視覺大小一致。
+4. 繪製時原本多算了一次 quiet zone offset，會把 QR 符號推出 canvas 邊界，導致 finder pattern 被截斷；修正後讓符號完整置中於 canvas 內。
+
+相關檔案：`openvoKao/ReceiptRasterizer.swift`。
+
 ## 驗證結果
 
 - iPhone 6s Plus 實機測試：
