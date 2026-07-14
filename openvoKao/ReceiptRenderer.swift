@@ -65,30 +65,36 @@ struct ReceiptRenderer {
             throw ReceiptRasterError.invalidQRCode
         }
 
+        data.append(contentsOf: ESC.alignLeft)
+        data.appendLine(rule())
+        data.append(contentsOf: ESC.alignCenter)
+        data.appendLine("銷貨明細單")
+        data.append(contentsOf: ESC.alignLeft)
         if isBusinessBuyer(job) {
-            data.append(contentsOf: ESC.alignLeft)
-            data.appendLine(rule())
-            data.append(contentsOf: ESC.alignCenter)
-            data.appendLine("銷貨明細單")
-            data.append(contentsOf: ESC.alignLeft)
             data.appendLine("買受人統編：\(job.buyerIdentifier ?? "")")
-            data.appendLine("營業人統編：\(job.sellerIdentifier ?? "--------")")
-            if let sellerName = job.sellerName, !sellerName.isEmpty {
-                appendWrapped(sellerName, to: &data)
-            }
-            data.appendLine("交易時間：\(DateFormatter.receiptDate.string(from: job.issuedAt))")
-            data.appendLine(itemHeader(for: job))
+        }
+        data.appendLine("營業人統編：\(job.sellerIdentifier ?? "--------")")
+        if let sellerName = job.sellerName, !sellerName.isEmpty {
+            appendWrapped(sellerName, to: &data)
+        }
+        data.appendLine("交易時間：\(DateFormatter.receiptDate.string(from: job.issuedAt))")
+        data.appendLine(itemHeader(for: job))
 
-            for item in job.items {
-                appendItem(item, taxCode: "TX", to: &data)
-            }
+        for item in job.items {
+            appendItem(item, taxCode: "TX", to: &data)
+        }
 
+        if isBusinessBuyer(job) {
             let tax = job.taxAmount ?? businessTaxAmount(for: job.totalAmount)
             let sales = job.salesAmount ?? (job.totalAmount - tax)
             data.appendLine("")
             data.appendLine(twoColumn("銷售額(應稅)", "\(sales)"))
             data.appendLine(twoColumn("稅額", "\(tax)"))
             data.appendLine(twoColumn("總計", "\(job.totalAmount)"))
+        } else {
+            data.appendLine(rule())
+            data.appendLine(twoColumn("總計", "\(job.totalAmount)"))
+            data.appendLine(twoColumn("課稅別", "TX"))
         }
 
         data.appendLine("")

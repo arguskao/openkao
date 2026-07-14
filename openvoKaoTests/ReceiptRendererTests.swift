@@ -152,7 +152,7 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertTrue(data.containsBytes(Array("LEGACY-QR".utf8)))
     }
 
-    func testConsumerReceiptOmitsSalesDetailEntirely() throws {
+    func testConsumerReceiptIncludesItemsWithoutBusinessTaxBreakdown() throws {
         var job = makeJob()
         job.buyerIdentifier = nil
 
@@ -161,12 +161,16 @@ final class ReceiptRendererTests: XCTestCase {
 
         XCTAssertFalse(printedText.containsGBKText("格式:25"))
         XCTAssertFalse(printedText.containsGBKText("銷售額(應稅)"))
-        XCTAssertFalse(printedText.containsGBKText("銷貨明細單"))
-        XCTAssertFalse(printedText.containsGBKText("品名"))
-        XCTAssertFalse(printedText.containsGBKText("加蛋"))
-        XCTAssertFalse(printedText.containsGBKText("奶茶"))
-        XCTAssertFalse(printedText.containsGBKText("課稅別"))
-        XCTAssertFalse(printedText.containsGBKText("TX"))
+        XCTAssertFalse(printedText.containsGBKText("買受人統編"))
+        XCTAssertTrue(printedText.containsGBKText("銷貨明細單"))
+        XCTAssertTrue(printedText.containsGBKText("營業人統編：12345678"))
+        XCTAssertTrue(printedText.containsGBKText("品名"))
+        XCTAssertTrue(printedText.containsGBKText("加蛋"))
+        XCTAssertTrue(printedText.containsGBKText("奶茶"))
+        XCTAssertTrue(printedText.containsGBKText("45TX"))
+        XCTAssertTrue(printedText.containsGBKText("90TX"))
+        XCTAssertTrue(printedText.containsGBKText("課稅別"))
+        XCTAssertTrue(printedText.containsGBKText("TX"))
     }
 
     func testReprintAddsReprintMarker() throws {
