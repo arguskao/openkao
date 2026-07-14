@@ -89,6 +89,69 @@ struct BackendClient {
         )
     }
 
+    func fetchStaffMembers() async throws -> [StaffMember] {
+        let response: StaffMembersResponse = try await request(
+            path: "/api/members?includeInactive=true",
+            method: "GET",
+            authorization: .auth
+        )
+        return response.members
+    }
+
+    func createStaffMember(account: String, password: String, name: String, phone: String) async throws -> StaffMember {
+        let response: StaffMemberResponse = try await request(
+            path: "/api/members",
+            method: "POST",
+            authorization: .auth,
+            body: StaffCreateRequest(account: account, password: password, name: name, phone: phone)
+        )
+        return response.member
+    }
+
+    func updateStaffMember(id: Int, name: String, phone: String, isActive: Bool) async throws -> StaffMember {
+        let response: StaffMemberResponse = try await request(
+            path: "/api/members/\(id)",
+            method: "PUT",
+            authorization: .auth,
+            body: StaffUpdateRequest(name: name, phone: phone, isActive: isActive)
+        )
+        return response.member
+    }
+
+    func deleteStaffMember(id: Int) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/members/\(id)",
+            method: "DELETE",
+            authorization: .auth
+        )
+    }
+
+    func resetStaffPassword(id: Int, password: String) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/members/\(id)/reset-password",
+            method: "POST",
+            authorization: .auth,
+            body: PasswordResetRequest(password: password)
+        )
+    }
+
+    func fetchManagedDevices() async throws -> ManagedCompanyDevices {
+        try await request(
+            path: "/api/devices",
+            method: "GET",
+            authorization: .auth
+        )
+    }
+
+    func revokeManagedDevice(id: String, unbindCode: String) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/devices/\(id)",
+            method: "DELETE",
+            authorization: .auth,
+            body: DeviceUnbindRequest(unbindCode: unbindCode)
+        )
+    }
+
     func fetchDevice() async throws -> BackendDevice {
         try await request(
             path: "/api/devices/me",
@@ -535,6 +598,23 @@ struct AuthCompany: Decodable {
     let taxId: String
     let address: String?
     let hasAppKeyConfigured: Bool
+    let deviceLimit: Int
+    let deviceUsed: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, taxId, address, hasAppKeyConfigured, deviceLimit, deviceUsed
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        taxId = try container.decode(String.self, forKey: .taxId)
+        address = try container.decodeIfPresent(String.self, forKey: .address)
+        hasAppKeyConfigured = try container.decode(Bool.self, forKey: .hasAppKeyConfigured)
+        deviceLimit = try container.decodeIfPresent(Int.self, forKey: .deviceLimit) ?? 1
+        deviceUsed = try container.decodeIfPresent(Int.self, forKey: .deviceUsed) ?? 0
+    }
 }
 
 struct AuthDevice: Decodable {
@@ -547,6 +627,35 @@ private struct EmptyRequest: Encodable {}
 
 private struct FailedRequest: Encodable {
     let message: String
+}
+
+private struct StaffMembersResponse: Decodable {
+    let members: [StaffMember]
+}
+
+private struct StaffMemberResponse: Decodable {
+    let member: StaffMember
+}
+
+private struct StaffCreateRequest: Encodable {
+    let account: String
+    let password: String
+    let name: String
+    let phone: String
+}
+
+private struct StaffUpdateRequest: Encodable {
+    let name: String
+    let phone: String
+    let isActive: Bool
+}
+
+private struct PasswordResetRequest: Encodable {
+    let password: String
+}
+
+private struct DeviceUnbindRequest: Encodable {
+    let unbindCode: String
 }
 
 private struct AuthRegisterRequest: Encodable {
@@ -647,8 +756,15 @@ private struct ErrorResponse: Decodable {
     let code: String?
     let message: String?
     let fieldErrors: [FieldErrorResponse]?
+    let deviceLimit: Int?
+    let deviceUsed: Int?
 
     var displayMessage: String {
+        if (code ?? error) == "device_limit_reached",
+           let deviceLimit,
+           let deviceUsed {
+            return "此公司已綁定 \(deviceUsed) / \(deviceLimit) 支手機，請聯絡 OpenvoKao 調整配額或先解除舊手機。"
+        }
         if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return message
         }
@@ -665,12 +781,16 @@ private struct ErrorResponse: Decodable {
             return "這個統一編號已經註冊。"
         case "device_binding_locked":
             return "這個帳號已綁定其他手機，請輸入解除綁定碼後再登入。"
+        case "device_limit_reached":
+            return "此公司可綁定的手機數量已滿，請先解除舊手機或聯絡 OpenvoKao 調整上限。"
         case "forbidden":
             return "權限不足。"
         case "invalid_auth_token":
             return "登入已失效，請重新登入。"
         case "invalid_credentials":
             return "帳號或密碼不正確。"
+        case "account_disabled":
+            return "此員工帳號已停用，請聯絡老闆。"
         case "invalid_device_token":
             return "裝置授權已失效，請重新登入或重新綁定。"
         case "missing_auth_token":
@@ -679,6 +799,8 @@ private struct ErrorResponse: Decodable {
             return "請先完成裝置綁定。"
         case "owner_required":
             return "此操作需要老闆權限。"
+        case "unbind_code_invalid":
+            return "解除綁定碼不正確。"
         case "password_too_short":
             return "密碼長度不足。"
         case "price_decimal_places_precision_loss":

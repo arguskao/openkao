@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PrinterSettingsView: View {
+    @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var printerManager: PrinterManager
 
     var body: some View {
@@ -91,11 +92,25 @@ struct PrinterSettingsView: View {
                 }
             }
             .navigationTitle("印表機設定")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if store.isOwner {
+                        NavigationLink {
+                            CompanyAccessView()
+                        } label: {
+                            Image(systemName: "person.2")
+                        }
+                        .accessibilityLabel("員工與手機")
+                        .help("員工與手機")
+                    }
+                }
+            }
         }
     }
 }
 
 #Preview {
     PrinterSettingsView()
+        .environmentObject(AppStore())
         .environmentObject(PrinterManager())
 }

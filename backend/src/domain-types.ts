@@ -79,6 +79,7 @@ export type AdminUserRow = {
   company_id: number | null;
   company_name: string | null;
   role: string | null;
+  is_active: number;
   created_at: string;
 };
 
@@ -89,6 +90,7 @@ export type UserSession = {
   company_id: number;
   device_id: string | null;
   role: string;
+  is_active: number;
   name: string | null;
   account: string;
   phone: string | null;

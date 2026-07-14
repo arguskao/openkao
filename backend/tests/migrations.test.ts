@@ -21,6 +21,8 @@ test("D1 migrations apply to an empty database", async () => {
   assert.equal(columnExists(d1.rawDatabase, "invoices", "voided_at"), true);
   assert.equal(columnExists(d1.rawDatabase, "invoices", "amego_void_response_json"), true);
   assert.equal(columnExists(d1.rawDatabase, "companies", "amego_printer_lang"), true);
+  assert.equal(columnExists(d1.rawDatabase, "companies", "max_bound_devices"), true);
+  assert.equal(columnExists(d1.rawDatabase, "users", "is_active"), true);
   assert.equal(foreignKeyIssueCount(d1.rawDatabase), 0);
   assert.equal(rowCount(d1.rawDatabase, "companies"), 0);
   assert.equal(rowCount(d1.rawDatabase, "print_jobs"), 0);
@@ -52,8 +54,11 @@ test("D1 old schema upgrade keeps row counts, foreign keys, and key queries vali
 
   const migratedInvoice = firstRow<{ status: string }>(db, "SELECT status FROM invoices LIMIT 1");
   assert.equal(migratedInvoice.status, "issued");
-  const migratedCompany = firstRow<{ amego_printer_lang: number }>(db, "SELECT amego_printer_lang FROM companies LIMIT 1");
-  assert.equal(migratedCompany.amego_printer_lang, 2);
+  const migratedCompany = firstRow<{ amego_printer_lang: number; max_bound_devices: number }>(
+    db,
+    "SELECT amego_printer_lang, max_bound_devices FROM companies LIMIT 1"
+  );
+  assert.deepEqual(migratedCompany, { amego_printer_lang: 2, max_bound_devices: 1 });
 
   const product = firstRow<{ company_id: number; category_id: number; price_decimal_places: number }>(
     db,
@@ -148,6 +153,19 @@ test("D1 integrity guards reject invalid business data", async () => {
   assert.throws(
     () => db.run(`UPDATE companies SET amego_printer_lang = 4 WHERE id = 1`),
     /companies_amego_printer_integrity_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`UPDATE companies SET max_bound_devices = 0 WHERE id = 1`),
+    /companies_device_limit_check_failed/
+  );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO users (id, company_id, email, password_hash, name, phone, role, is_active)
+      VALUES (2, 1, 'staff@example.test', 'hash', 'Staff', NULL, 'staff', 2)
+    `),
+    /users_active_check_failed/
   );
 
   assert.throws(

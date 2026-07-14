@@ -1,3 +1,4 @@
+import { requireOwnerAccess } from "./auth";
 import type { SalesInvoiceHeaderRow, SalesInvoiceRow, SalesSummaryRow, UserSession } from "./domain-types";
 import { HttpError, json } from "./http";
 import {
@@ -13,6 +14,7 @@ import {
 import type { Env } from "./types";
 
 export async function listSalesReport(env: Env, session: UserSession, url: URL): Promise<Response> {
+  requireOwnerAccess(session);
   const startDate = normalizeReportDate(url.searchParams.get("startDate"), "startDate");
   const endDate = normalizeReportDate(url.searchParams.get("endDate"), "endDate");
 

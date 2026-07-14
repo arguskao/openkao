@@ -119,6 +119,7 @@ export async function getDeviceMe(env: Env, device: DeviceSession): Promise<Resp
 
 export async function listManagedDevices(env: Env, session: UserSession): Promise<Response> {
   requireOwnerAccess(session);
+  const quota = await fetchCompanyDeviceQuota(env, session.company_id);
 
   const result = await env.DB.prepare(
     `SELECT
@@ -138,7 +139,9 @@ export async function listManagedDevices(env: Env, session: UserSession): Promis
     .all<ManagedDeviceRow>();
 
   return json({
-    devices: result.results.map(mapManagedDeviceRow)
+    devices: result.results.map(mapManagedDeviceRow),
+    deviceLimit: quota.limit,
+    deviceUsed: quota.used
   });
 }
 
@@ -158,12 +161,23 @@ export async function createManagedDevice(
   const token = generateSessionToken();
   const tokenHash = await hashDeviceToken(token);
 
-  await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(id, session.company_id, name, issueDeviceTokenStorageValue(id), tokenHash, platform, installationId)
-    .run();
+  if (installationId) {
+    await insertBoundDeviceWithinQuota(env, {
+      id,
+      companyId: session.company_id,
+      name,
+      platform,
+      installationId,
+      tokenHash
+    });
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
+       VALUES (?, ?, ?, ?, ?, ?, NULL)`
+    )
+      .bind(id, session.company_id, name, issueDeviceTokenStorageValue(id), tokenHash, platform)
+      .run();
+  }
 
   const device = await fetchManagedDeviceById(env, session.company_id, id);
   await writeAuditLog(env, session, "device", id, "device.create", {
@@ -247,6 +261,7 @@ export async function rotateManagedDeviceToken(
 }
 
 export async function revokeManagedDevice(
+  request: Request,
   env: Env,
   session: UserSession,
   deviceIdValue: string,
@@ -255,6 +270,11 @@ export async function revokeManagedDevice(
   requireOwnerAccess(session);
 
   const device = await fetchManagedDeviceById(env, session.company_id, deviceIdValue);
+  const input = await readJson<{ unbindCode?: string }>(request);
+  const expectedCode = await fetchCompanyUnbindCode(env, session.company_id);
+  if (!expectedCode || input.unbindCode?.trim() !== expectedCode) {
+    throw new HttpError(403, "unbind_code_invalid");
+  }
 
   await env.DB.batch([
     env.DB.prepare(
@@ -321,25 +341,39 @@ export async function ensureCompanyDevice(
     };
   }
 
-  const existingCompanyDevice = await fetchPrimaryCompanyDevice(env, companyId, false);
-  if (existingCompanyDevice) {
-    const companyUnbindCode = expectedUnbindCode ?? await fetchCompanyUnbindCode(env, companyId);
-    if (!companyUnbindCode || unbindCode?.trim() !== companyUnbindCode) {
-      throw new HttpError(409, "device_binding_locked");
-    }
-
-    await releaseCompanyDevices(env, companyId);
-  }
-
   const id = crypto.randomUUID();
   const token = generateSessionToken();
   const tokenHash = await hashDeviceToken(token);
-  await env.DB.prepare(
-    `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(id, companyId, deviceName, issueDeviceTokenStorageValue(id), tokenHash, platform, installationId)
-    .run();
+  const quota = await fetchCompanyDeviceQuota(env, companyId);
+
+  if (quota.used >= quota.limit) {
+    const companyUnbindCode = expectedUnbindCode ?? await fetchCompanyUnbindCode(env, companyId);
+    if (quota.used === 1 && companyUnbindCode && unbindCode?.trim() === companyUnbindCode) {
+      const oldDevice = await fetchPrimaryBoundCompanyDevice(env, companyId);
+      if (oldDevice) {
+        await replaceCompanyDevice(env, oldDevice.id, {
+          id,
+          companyId,
+          name: deviceName,
+          platform,
+          installationId,
+          tokenHash
+        });
+        return { id, token, name: deviceName };
+      }
+    } else {
+      throw deviceLimitError(quota);
+    }
+  }
+
+  await insertBoundDeviceWithinQuota(env, {
+    id,
+    companyId,
+    name: deviceName,
+    platform,
+    installationId,
+    tokenHash
+  });
 
   return {
     id,
@@ -448,17 +482,130 @@ async function fetchCompanyUnbindCode(env: Env, companyId: number): Promise<stri
   return row?.unbind_code?.trim() || null;
 }
 
-async function releaseCompanyDevices(env: Env, companyId: number): Promise<void> {
-  await env.DB.batch([
+async function fetchPrimaryBoundCompanyDevice(env: Env, companyId: number): Promise<DeviceIdentity | null> {
+  return env.DB.prepare(
+    `SELECT id, name
+     FROM devices
+     WHERE company_id = ?
+       AND installation_id IS NOT NULL
+     ORDER BY created_at ASC
+     LIMIT 1`
+  ).bind(companyId).first<DeviceIdentity>();
+}
+
+async function replaceCompanyDevice(
+  env: Env,
+  oldDeviceId: string,
+  input: {
+    id: string;
+    companyId: number;
+    name: string;
+    platform: string;
+    installationId: string;
+    tokenHash: string;
+  }
+): Promise<void> {
+  const results = await env.DB.batch([
     env.DB.prepare(
       `UPDATE auth_sessions
        SET revoked_at = CURRENT_TIMESTAMP
        WHERE company_id = ?
+         AND device_id = ?
          AND revoked_at IS NULL`
-    ).bind(companyId),
+    ).bind(input.companyId, oldDeviceId),
     env.DB.prepare(
       `DELETE FROM devices
-       WHERE company_id = ?`
-    ).bind(companyId)
+       WHERE company_id = ? AND id = ?`
+    ).bind(input.companyId, oldDeviceId),
+    env.DB.prepare(
+      `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
+       SELECT ?, c.id, ?, ?, ?, ?, ?
+       FROM companies c
+       WHERE c.id = ?
+         AND (
+           SELECT COUNT(*)
+           FROM devices d
+           WHERE d.company_id = c.id
+             AND d.installation_id IS NOT NULL
+         ) < c.max_bound_devices`
+    ).bind(
+      input.id,
+      input.name,
+      issueDeviceTokenStorageValue(input.id),
+      input.tokenHash,
+      input.platform,
+      input.installationId,
+      input.companyId
+    )
   ]);
+
+  if (results[2]?.meta.changes === 0) {
+    throw deviceLimitError(await fetchCompanyDeviceQuota(env, input.companyId));
+  }
+}
+
+export async function fetchCompanyDeviceQuota(
+  env: Env,
+  companyId: number
+): Promise<{ limit: number; used: number }> {
+  const row = await env.DB.prepare(
+    `SELECT
+       c.max_bound_devices AS device_limit,
+       (
+         SELECT COUNT(*)
+         FROM devices d
+         WHERE d.company_id = c.id
+           AND d.installation_id IS NOT NULL
+       ) AS device_used
+     FROM companies c
+     WHERE c.id = ?`
+  ).bind(companyId).first<{ device_limit: number; device_used: number }>();
+  if (!row) throw new HttpError(404, "company_not_found");
+  return { limit: Number(row.device_limit), used: Number(row.device_used) };
+}
+
+async function insertBoundDeviceWithinQuota(
+  env: Env,
+  input: {
+    id: string;
+    companyId: number;
+    name: string;
+    platform: string;
+    installationId: string;
+    tokenHash: string;
+  }
+): Promise<void> {
+  const result = await env.DB.prepare(
+    `INSERT INTO devices (id, company_id, name, token, token_hash, platform, installation_id)
+     SELECT ?, c.id, ?, ?, ?, ?, ?
+     FROM companies c
+     WHERE c.id = ?
+       AND (
+         SELECT COUNT(*)
+         FROM devices d
+         WHERE d.company_id = c.id
+           AND d.installation_id IS NOT NULL
+       ) < c.max_bound_devices`
+  ).bind(
+    input.id,
+    input.name,
+    issueDeviceTokenStorageValue(input.id),
+    input.tokenHash,
+    input.platform,
+    input.installationId,
+    input.companyId
+  ).run();
+
+  if (result.meta.changes === 0) {
+    throw deviceLimitError(await fetchCompanyDeviceQuota(env, input.companyId));
+  }
+}
+
+function deviceLimitError(quota: { limit: number; used: number }): HttpError {
+  return new HttpError(409, "device_limit_reached", {
+    details: {
+      deviceLimit: quota.limit,
+      deviceUsed: quota.used
+    }
+  });
 }

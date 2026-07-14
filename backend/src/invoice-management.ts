@@ -4,6 +4,7 @@ import {
   voidAmegoInvoice,
   type AmegoInvoiceResult
 } from "./amego";
+import { requireOwnerAccess } from "./auth";
 import type { PrintJobPayload, UserSession } from "./domain-types";
 import { HttpError, json } from "./http";
 import type { Env } from "./types";
@@ -218,7 +219,7 @@ export async function voidInvoice(
   id: string,
   writeAuditLog: AuditWriter
 ): Promise<Response> {
-  requireInvoiceManager(session);
+  requireOwnerAccess(session);
   const row = await fetchInvoice(env, session.company_id, id);
   if (!row) throw new HttpError(404, "invoice_not_found");
   if (row.status === "voided") return json({ ok: true, idempotent: true });

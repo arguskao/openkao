@@ -275,6 +275,8 @@ struct AuthSession: Codable, Equatable {
     var companyName: String
     var taxId: String
     var address: String
+    var deviceLimit: Int
+    var deviceUsed: Int
 
     static let empty = AuthSession(
         authToken: "",
@@ -286,7 +288,9 @@ struct AuthSession: Codable, Equatable {
         companyId: 0,
         companyName: "",
         taxId: "",
-        address: ""
+        address: "",
+        deviceLimit: 1,
+        deviceUsed: 0
     )
 
     var isAuthenticated: Bool {
@@ -304,6 +308,8 @@ struct AuthSession: Codable, Equatable {
         case companyName
         case taxId
         case address
+        case deviceLimit
+        case deviceUsed
     }
 
     init(
@@ -316,7 +322,9 @@ struct AuthSession: Codable, Equatable {
         companyId: Int,
         companyName: String,
         taxId: String,
-        address: String
+        address: String,
+        deviceLimit: Int,
+        deviceUsed: Int
     ) {
         self.authToken = authToken
         self.userId = userId
@@ -328,6 +336,8 @@ struct AuthSession: Codable, Equatable {
         self.companyName = companyName
         self.taxId = taxId
         self.address = address
+        self.deviceLimit = deviceLimit
+        self.deviceUsed = deviceUsed
     }
 
     init(from decoder: Decoder) throws {
@@ -349,6 +359,8 @@ struct AuthSession: Codable, Equatable {
         companyName = try container.decodeIfPresent(String.self, forKey: .companyName) ?? ""
         taxId = try container.decodeIfPresent(String.self, forKey: .taxId) ?? ""
         address = try container.decodeIfPresent(String.self, forKey: .address) ?? ""
+        deviceLimit = try container.decodeIfPresent(Int.self, forKey: .deviceLimit) ?? 1
+        deviceUsed = try container.decodeIfPresent(Int.self, forKey: .deviceUsed) ?? 0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -362,7 +374,37 @@ struct AuthSession: Codable, Equatable {
         try container.encode(companyName, forKey: .companyName)
         try container.encode(taxId, forKey: .taxId)
         try container.encode(address, forKey: .address)
+        try container.encode(deviceLimit, forKey: .deviceLimit)
+        try container.encode(deviceUsed, forKey: .deviceUsed)
     }
+}
+
+struct StaffMember: Identifiable, Decodable, Equatable {
+    let id: Int
+    let account: String
+    let name: String
+    let phone: String?
+    let role: String
+    let isActive: Bool
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct ManagedCompanyDevice: Identifiable, Decodable, Equatable {
+    let id: String
+    let companyId: Int
+    let name: String
+    let platform: String
+    let installationId: String?
+    let lastSeenAt: String?
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct ManagedCompanyDevices: Decodable, Equatable {
+    let devices: [ManagedCompanyDevice]
+    let deviceLimit: Int
+    let deviceUsed: Int
 }
 
 struct CompanyProfile: Codable, Equatable {

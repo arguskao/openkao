@@ -98,6 +98,10 @@ final class AppStore: ObservableObject {
         authSession.isAuthenticated
     }
 
+    var isOwner: Bool {
+        authSession.role == "owner"
+    }
+
     var pendingJobs: [PrintJob] {
         printJobs.filter { $0.status == .pending || $0.status == .printing }
     }
@@ -263,6 +267,40 @@ final class AppStore: ObservableObject {
     func deleteProduct(id: Int) async throws {
         try await authClient.deleteCatalogProduct(id: id)
         await refreshCatalog()
+    }
+
+    func fetchStaffMembers() async throws -> [StaffMember] {
+        try await authClient.fetchStaffMembers()
+    }
+
+    func createStaffMember(account: String, password: String, name: String, phone: String) async throws -> StaffMember {
+        try await authClient.createStaffMember(account: account, password: password, name: name, phone: phone)
+    }
+
+    func updateStaffMember(id: Int, name: String, phone: String, isActive: Bool) async throws -> StaffMember {
+        try await authClient.updateStaffMember(id: id, name: name, phone: phone, isActive: isActive)
+    }
+
+    func deleteStaffMember(id: Int) async throws {
+        try await authClient.deleteStaffMember(id: id)
+    }
+
+    func resetStaffPassword(id: Int, password: String) async throws {
+        try await authClient.resetStaffPassword(id: id, password: password)
+    }
+
+    func fetchManagedDevices() async throws -> ManagedCompanyDevices {
+        let response = try await authClient.fetchManagedDevices()
+        authSession.deviceLimit = response.deviceLimit
+        authSession.deviceUsed = response.deviceUsed
+        return response
+    }
+
+    func revokeManagedDevice(id: String, unbindCode: String) async throws {
+        try await authClient.revokeManagedDevice(id: id, unbindCode: unbindCode)
+        if id == deviceProfile.backendDeviceId {
+            logoutLocally()
+        }
     }
 
     func verifyDeviceBinding() async {
@@ -482,7 +520,9 @@ final class AppStore: ObservableObject {
             companyId: response.company.id,
             companyName: response.company.name,
             taxId: response.company.taxId,
-            address: response.company.address ?? ""
+            address: response.company.address ?? "",
+            deviceLimit: response.company.deviceLimit,
+            deviceUsed: response.company.deviceUsed
         )
 
         companyProfile = CompanyProfile(

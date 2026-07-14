@@ -35,6 +35,7 @@ import {
   createManagedDevice,
   ensureCompanyDevice,
   fetchCompanyDeviceById,
+  fetchCompanyDeviceQuota,
   fetchPrimaryCompanyDevice,
   getDeviceMe,
   listManagedDevices,
@@ -43,6 +44,13 @@ import {
   rotateManagedDeviceToken,
   updateManagedDevice
 } from "./devices";
+import {
+  createStaffMember,
+  deleteStaffMember,
+  listStaffMembers,
+  resetStaffPassword,
+  updateStaffMember
+} from "./members";
 import type {
   AdminUserRow,
   AuditLogRow,
@@ -137,6 +145,35 @@ export default {
         return reply(await logoutAccount(env, session));
       }
 
+      if (url.pathname === "/api/members" && request.method === "GET") {
+        const session = await requireUserSession(request, env, context);
+        return reply(await listStaffMembers(env, session, url));
+      }
+
+      if (url.pathname === "/api/members" && request.method === "POST") {
+        await enforceRateLimit(request, env, "staff_create", 20, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await createStaffMember(request, env, session, writeAuditLog));
+      }
+
+      const staffMemberMatch = url.pathname.match(/^\/api\/members\/([^/]+)$/);
+      if (staffMemberMatch && request.method === "PUT") {
+        const session = await requireUserSession(request, env, context);
+        return reply(await updateStaffMember(request, env, session, staffMemberMatch[1], writeAuditLog));
+      }
+
+      if (staffMemberMatch && request.method === "DELETE") {
+        const session = await requireUserSession(request, env, context);
+        return reply(await deleteStaffMember(env, session, staffMemberMatch[1], writeAuditLog));
+      }
+
+      const staffPasswordMatch = url.pathname.match(/^\/api\/members\/([^/]+)\/reset-password$/);
+      if (staffPasswordMatch && request.method === "POST") {
+        await enforceRateLimit(request, env, "staff_reset_password", 10, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await resetStaffPassword(request, env, session, staffPasswordMatch[1], writeAuditLog));
+      }
+
       if (url.pathname === "/api/reports/sales" && request.method === "GET") {
         const session = await requireUserSession(request, env, context);
         return reply(await listSalesReport(env, session, url));
@@ -214,7 +251,7 @@ export default {
 
       if (managedDeviceMatch && request.method === "DELETE") {
         const session = await requireUserSession(request, env, context);
-        return reply(await revokeManagedDevice(env, session, managedDeviceMatch[1], writeAuditLog));
+        return reply(await revokeManagedDevice(request, env, session, managedDeviceMatch[1], writeAuditLog));
       }
 
       const managedDeviceRotateMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/rotate-token$/);
@@ -302,6 +339,17 @@ export default {
         await enforceRateLimit(request, env, "admin_companies_create", 20, 10 * 60);
         await requireAdmin(request, env, context);
         return reply(await createCompany(request, env, context));
+      }
+
+      const adminCompanyDeviceLimitMatch = url.pathname.match(/^\/api\/admin\/companies\/([^/]+)\/device-limit$/);
+      if (adminCompanyDeviceLimitMatch && request.method === "PATCH") {
+        await requireAdmin(request, env, context);
+        return reply(await adminUpdateCompanyDeviceLimit(
+          request,
+          env,
+          adminCompanyDeviceLimitMatch[1],
+          context
+        ));
       }
 
       if (url.pathname === "/api/admin/products" && request.method === "GET") {
@@ -475,7 +523,9 @@ async function registerAccount(request: Request, env: Env): Promise<Response> {
       name: input.companyName.trim(),
       taxId,
       address,
-      hasAppKeyConfigured: false
+      hasAppKeyConfigured: false,
+      deviceLimit: 1,
+      deviceUsed: 1
     },
     device: {
       id: deviceId,
@@ -500,6 +550,7 @@ async function loginAccount(request: Request, env: Env, context: RequestContext)
        u.name,
        u.phone,
        u.role,
+       u.is_active,
        c.name AS company_name,
        c.tax_id,
        c.address,
@@ -518,6 +569,7 @@ async function loginAccount(request: Request, env: Env, context: RequestContext)
       name: string | null;
       phone: string | null;
       role: string | null;
+      is_active: number;
       company_name: string;
       tax_id: string;
       address: string | null;
@@ -550,6 +602,10 @@ async function loginAccount(request: Request, env: Env, context: RequestContext)
     throw new HttpError(401, "invalid_credentials");
   }
 
+  if (row.is_active !== 1) {
+    throw new HttpError(403, "account_disabled");
+  }
+
   let device: DeviceIdentity;
   try {
     device = await ensureCompanyDevice(
@@ -578,6 +634,7 @@ async function loginAccount(request: Request, env: Env, context: RequestContext)
   }
   const sessionToken = await createAuthSession(env, row.id, row.company_id, device.id);
 
+  const quota = await fetchCompanyDeviceQuota(env, row.company_id);
   return jsonAuthPayload({
     authToken: sessionToken,
     user: {
@@ -592,7 +649,9 @@ async function loginAccount(request: Request, env: Env, context: RequestContext)
       name: row.company_name,
       taxId: row.tax_id,
       address: row.address,
-      hasAppKeyConfigured: hasConfiguredAppKey(row.amego_app_key)
+      hasAppKeyConfigured: hasConfiguredAppKey(row.amego_app_key),
+      deviceLimit: quota.limit,
+      deviceUsed: quota.used
     },
     device
   });
@@ -607,6 +666,7 @@ async function getAuthMe(env: Env, session: UserSession): Promise<Response> {
     throw new HttpError(409, "device_not_bound");
   }
 
+  const quota = await fetchCompanyDeviceQuota(env, session.company_id);
   return jsonAuthPayload({
     authToken: session.token,
     user: {
@@ -621,7 +681,9 @@ async function getAuthMe(env: Env, session: UserSession): Promise<Response> {
       name: session.company_name,
       taxId: session.tax_id,
       address: session.address,
-      hasAppKeyConfigured: hasConfiguredAppKey(session.amego_app_key)
+      hasAppKeyConfigured: hasConfiguredAppKey(session.amego_app_key),
+      deviceLimit: quota.limit,
+      deviceUsed: quota.used
     },
     device: {
       id: resolvedDevice.id,
@@ -759,6 +821,44 @@ async function createCompany(request: Request, env: Env, context: RequestContext
   return json({ id: companyId, unbindCode });
 }
 
+async function adminUpdateCompanyDeviceLimit(
+  request: Request,
+  env: Env,
+  companyIdValue: string,
+  context: RequestContext
+): Promise<Response> {
+  const companyId = parsePositiveId(companyIdValue, "companyId");
+  const input = await readJson<{ maxBoundDevices?: number }>(request);
+  const maxBoundDevices = parsePositiveId(input.maxBoundDevices, "maxBoundDevices");
+  const quota = await fetchCompanyDeviceQuota(env, companyId);
+  if (maxBoundDevices < quota.used) {
+    throw new HttpError(409, "device_limit_below_usage", {
+      details: { deviceLimit: quota.limit, deviceUsed: quota.used }
+    });
+  }
+
+  await env.DB.prepare(
+    `UPDATE companies
+     SET max_bound_devices = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).bind(maxBoundDevices, companyId).run();
+  context.companyId = companyId;
+  await writeSystemAuditLog(env, {
+    companyId,
+    targetType: "company",
+    targetId: String(companyId),
+    action: "admin.company.device_limit.update",
+    details: {
+      requestId: context.requestId,
+      previousLimit: quota.limit,
+      maxBoundDevices,
+      deviceUsed: quota.used
+    }
+  });
+
+  return json({ companyId, deviceLimit: maxBoundDevices, deviceUsed: quota.used });
+}
+
 async function adminListUsers(env: Env, url: URL): Promise<Response> {
   const companyIdParam = url.searchParams.get("companyId");
   const companyId = companyIdParam ? parsePositiveId(companyIdParam, "companyId") : null;
@@ -773,6 +873,7 @@ async function adminListUsers(env: Env, url: URL): Promise<Response> {
            u.company_id,
            c.name AS company_name,
            u.role,
+           u.is_active,
            u.created_at
          FROM users u
          LEFT JOIN companies c ON c.id = u.company_id
@@ -788,6 +889,7 @@ async function adminListUsers(env: Env, url: URL): Promise<Response> {
            u.company_id,
            c.name AS company_name,
            u.role,
+           u.is_active,
            u.created_at
          FROM users u
          LEFT JOIN companies c ON c.id = u.company_id
@@ -806,6 +908,7 @@ async function adminListUsers(env: Env, url: URL): Promise<Response> {
       companyId: row.company_id,
       companyName: row.company_name,
       role: normalizeUserRole(row.role),
+      isActive: row.is_active === 1,
       createdAt: row.created_at
     }))
   });
@@ -924,6 +1027,7 @@ async function requireUserSession(request: Request, env: Env, context?: RequestC
        u.email AS account,
        u.phone,
        u.role,
+       u.is_active,
        c.name AS company_name,
        c.tax_id,
        c.address,
@@ -941,6 +1045,10 @@ async function requireUserSession(request: Request, env: Env, context?: RequestC
 
   if (!row) {
     throw new HttpError(401, "invalid_auth_token");
+  }
+
+  if (row.is_active !== 1) {
+    throw new HttpError(403, "account_disabled");
   }
 
   await upgradeLegacyAuthSessionTokenIfNeeded(env, row.token, token, tokenHash);
@@ -1207,7 +1315,15 @@ function sanitizeAuditValue(key: string, value: unknown): unknown {
 function jsonAuthPayload(payload: {
   authToken: string;
   user: { id: number; name: string | null; account: string; phone: string | null; role: "owner" | "staff" | "printer" };
-  company: { id: number; name: string; taxId: string; address: string | null; hasAppKeyConfigured: boolean };
+  company: {
+    id: number;
+    name: string;
+    taxId: string;
+    address: string | null;
+    hasAppKeyConfigured: boolean;
+    deviceLimit: number;
+    deviceUsed: number;
+  };
   device: { id: string; name: string; token?: string };
 }): Response {
   return json(payload);

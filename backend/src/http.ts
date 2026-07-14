@@ -7,6 +7,7 @@ export type FieldError = {
 export class HttpError extends Error {
   readonly code: string;
   readonly fieldErrors: FieldError[];
+  readonly details: Record<string, unknown>;
 
   constructor(
     readonly status: number,
@@ -14,11 +15,13 @@ export class HttpError extends Error {
     options?: {
       code?: string;
       fieldErrors?: FieldError[];
+      details?: Record<string, unknown>;
     }
   ) {
     super(message);
     this.code = options?.code ?? message;
     this.fieldErrors = options?.fieldErrors ?? [];
+    this.details = options?.details ?? {};
   }
 }
 
@@ -47,6 +50,7 @@ export function buildErrorResponse(error: unknown, requestId: string) {
       code: error.code,
       message,
       fieldErrors: inferFieldErrors(error.code, error.fieldErrors),
+      ...error.details,
       requestId
     };
   }
@@ -106,6 +110,8 @@ function localizedMessageForCode(code: string): string {
     date_range_invalid: "日期區間不正確。",
     date_range_too_large: "日期區間太大。",
     device_binding_locked: "這個帳號已綁定第一台手機，換手機前需要解除綁定。",
+    device_limit_reached: "此公司可綁定的手機數量已滿，請先解除舊手機或聯絡 OpenvoKao 調整上限。",
+    device_limit_below_usage: "手機上限不能低於目前已綁定的數量。",
     device_not_bound: "這台裝置尚未綁定。",
     forbidden: "權限不足。",
     internal_error: "伺服器暫時無法處理，請提供 request ID 協助查詢。",
@@ -124,9 +130,12 @@ function localizedMessageForCode(code: string): string {
     missing_device_token: "缺少裝置 Token。",
     not_found: "找不到資料。",
     owner_required: "此操作需要老闆權限。",
+    account_disabled: "此員工帳號已停用，請聯絡老闆。",
     password_too_short: "密碼長度不足。",
     price_decimal_places_precision_loss: "目前商品價格含有更細的小數，不能直接降低小數位數。",
     request_body_too_large: "請求內容太大。",
+    staff_not_found: "找不到這個員工帳號。",
+    unbind_code_invalid: "解除綁定碼不正確。",
     total_amount_mismatch: "總金額必須等於所有品項小計加總。"
   };
 

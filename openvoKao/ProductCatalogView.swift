@@ -61,17 +61,20 @@ struct ProductCatalogView: View {
                         }
                         .disabled(store.catalogSyncStatus.isSyncing)
 
-                        Button {
-                            if mode == .categories {
-                                categoryEditor = CategoryEditorState.new(defaultSortOrder: nextCategorySortOrder)
-                            } else {
-                                productEditor = ProductEditorState.new(
-                                    defaultCategoryId: defaultCategoryId,
-                                    defaultSortOrder: nextProductSortOrder
-                                )
+                        if store.isOwner {
+                            Button {
+                                if mode == .categories {
+                                    categoryEditor = CategoryEditorState.new(defaultSortOrder: nextCategorySortOrder)
+                                } else {
+                                    productEditor = ProductEditorState.new(
+                                        defaultCategoryId: defaultCategoryId,
+                                        defaultSortOrder: nextProductSortOrder
+                                    )
+                                }
+                            } label: {
+                                Image(systemName: "plus")
                             }
-                        } label: {
-                            Image(systemName: "plus")
+                            .accessibilityLabel(mode == .categories ? "新增分類" : "新增商品")
                         }
                     }
                 }
@@ -202,17 +205,20 @@ struct ProductCatalogView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
+                        guard store.isOwner else { return }
                         categoryEditor = CategoryEditorState.editing(category)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("刪除", role: .destructive) {
-                            pendingDeleteCategory = category
-                        }
+                        if store.isOwner {
+                            Button("刪除", role: .destructive) {
+                                pendingDeleteCategory = category
+                            }
 
-                        Button("編輯") {
-                            categoryEditor = CategoryEditorState.editing(category)
+                            Button("編輯") {
+                                categoryEditor = CategoryEditorState.editing(category)
+                            }
+                            .tint(.blue)
                         }
-                        .tint(.blue)
                     }
                 }
             }
@@ -222,12 +228,14 @@ struct ProductCatalogView: View {
 
     private var productList: some View {
         List {
-            Section("小數位數") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Stepper("小數位數 \(priceDecimalPlaces)", value: $priceDecimalPlaces, in: 0...4)
-                    Button("套用") {
-                        Task {
-                            await savePriceDecimalPlaces()
+            if store.isOwner {
+                Section("小數位數") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Stepper("小數位數 \(priceDecimalPlaces)", value: $priceDecimalPlaces, in: 0...4)
+                        Button("套用") {
+                            Task {
+                                await savePriceDecimalPlaces()
+                            }
                         }
                     }
                 }
@@ -281,17 +289,20 @@ struct ProductCatalogView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
+                        guard store.isOwner else { return }
                         productEditor = ProductEditorState.editing(product, decimalPlaces: store.catalogPriceDecimalPlaces)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("刪除", role: .destructive) {
-                            pendingDeleteProduct = product
-                        }
+                        if store.isOwner {
+                            Button("刪除", role: .destructive) {
+                                pendingDeleteProduct = product
+                            }
 
-                        Button("編輯") {
-                            productEditor = ProductEditorState.editing(product, decimalPlaces: store.catalogPriceDecimalPlaces)
+                            Button("編輯") {
+                                productEditor = ProductEditorState.editing(product, decimalPlaces: store.catalogPriceDecimalPlaces)
+                            }
+                            .tint(.blue)
                         }
-                        .tint(.blue)
                     }
                 }
             }

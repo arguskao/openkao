@@ -95,6 +95,150 @@ final class BackendClientTests: XCTestCase {
         }
     }
 
+    func testDeviceLimitErrorIncludesCurrentUsage() async {
+        let session = StubBackendURLSession { request in
+            httpResponse(
+                statusCode: 409,
+                url: request.url,
+                body: #"{"error":"device_limit_reached","code":"device_limit_reached","deviceLimit":3,"deviceUsed":3}"#
+            )
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "token", urlSession: session)
+
+        do {
+            _ = try await client.fetchAuthMe()
+            XCTFail("Expected BackendError.server")
+        } catch BackendError.server(let statusCode, let message) {
+            XCTAssertEqual(statusCode, 409)
+            XCTAssertEqual(message, "此公司已綁定 3 / 3 支手機，請聯絡 OpenvoKao 調整配額或先解除舊手機。")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testAuthMeDecodesCompanyDeviceQuota() async throws {
+        let session = StubBackendURLSession { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/me")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer auth-token")
+            return httpResponse(
+                statusCode: 200,
+                url: request.url,
+                body: """
+                {
+                  "authToken": "auth-token",
+                  "user": {
+                    "id": 1,
+                    "name": "老闆",
+                    "account": "owner",
+                    "phone": "0900000000",
+                    "role": "owner"
+                  },
+                  "company": {
+                    "id": 7,
+                    "name": "測試公司",
+                    "taxId": "12345678",
+                    "address": "台北市",
+                    "hasAppKeyConfigured": true,
+                    "deviceLimit": 3,
+                    "deviceUsed": 2
+                  },
+                  "device": {"id": "device-1", "token": "device-token", "name": "櫃台 iPhone"}
+                }
+                """
+            )
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "auth-token", urlSession: session)
+
+        let response = try await client.fetchAuthMe()
+
+        XCTAssertEqual(response.company.deviceLimit, 3)
+        XCTAssertEqual(response.company.deviceUsed, 2)
+        XCTAssertEqual(response.user.role, "owner")
+    }
+
+    func testFetchStaffMembersUsesOwnerAuthAndDecodesStatus() async throws {
+        let session = StubBackendURLSession { request in
+            XCTAssertEqual(request.url?.path, "/api/members")
+            XCTAssertEqual(request.url?.query, "includeInactive=true")
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer owner-token")
+            return httpResponse(
+                statusCode: 200,
+                url: request.url,
+                body: """
+                {
+                  "members": [{
+                    "id": 12,
+                    "account": "staffone",
+                    "name": "員工一",
+                    "phone": "0911222333",
+                    "role": "staff",
+                    "isActive": false,
+                    "createdAt": "2026-07-14 09:00:00",
+                    "updatedAt": "2026-07-14 10:00:00"
+                  }]
+                }
+                """
+            )
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "owner-token", urlSession: session)
+
+        let members = try await client.fetchStaffMembers()
+
+        XCTAssertEqual(members.count, 1)
+        XCTAssertEqual(members[0].account, "staffone")
+        XCTAssertFalse(members[0].isActive)
+    }
+
+    func testManagedDevicesDecodeQuotaAndUnbindSendsCode() async throws {
+        var requestCount = 0
+        let session = StubBackendURLSession { request in
+            requestCount += 1
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer owner-token")
+
+            if requestCount == 1 {
+                XCTAssertEqual(request.url?.path, "/api/devices")
+                XCTAssertEqual(request.httpMethod, "GET")
+                return httpResponse(
+                    statusCode: 200,
+                    url: request.url,
+                    body: """
+                    {
+                      "devices": [{
+                        "id": "device-1",
+                        "companyId": 7,
+                        "name": "櫃台 iPhone",
+                        "platform": "ios",
+                        "installationId": "installation-1",
+                        "lastSeenAt": "2026-07-14 10:00:00",
+                        "createdAt": "2026-07-14 09:00:00",
+                        "updatedAt": "2026-07-14 10:00:00"
+                      }],
+                      "deviceLimit": 2,
+                      "deviceUsed": 1
+                    }
+                    """
+                )
+            }
+
+            XCTAssertEqual(request.url?.path, "/api/devices/device-1")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            let body = try XCTUnwrap(request.httpBody)
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+            XCTAssertEqual(json["unbindCode"], "12345678")
+            return httpResponse(statusCode: 200, url: request.url, body: "{}")
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "owner-token", urlSession: session)
+
+        let response = try await client.fetchManagedDevices()
+        try await client.revokeManagedDevice(id: "device-1", unbindCode: "12345678")
+
+        XCTAssertEqual(response.deviceLimit, 2)
+        XCTAssertEqual(response.deviceUsed, 1)
+        XCTAssertEqual(response.devices.first?.installationId, "installation-1")
+        XCTAssertEqual(requestCount, 2)
+    }
+
     func testPendingPrintJobDecodesBackendDates() async throws {
         let session = StubBackendURLSession { request in
             httpResponse(

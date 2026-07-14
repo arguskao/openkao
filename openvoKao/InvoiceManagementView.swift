@@ -206,10 +206,12 @@ private struct ManagedInvoiceDetailView: View {
                         }
                         .disabled(isWorking || invoice.status == .voided)
 
-                        Button(role: .destructive) { confirmVoid = true } label: {
-                            Label("作廢發票", systemImage: "xmark.circle")
+                        if store.isOwner {
+                            Button(role: .destructive) { confirmVoid = true } label: {
+                                Label("作廢發票", systemImage: "xmark.circle")
+                            }
+                            .disabled(isWorking || invoice.status == .voided)
                         }
-                        .disabled(isWorking || invoice.status == .voided)
                     }
                 }
             }

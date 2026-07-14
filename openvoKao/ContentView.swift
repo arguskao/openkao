@@ -26,6 +26,11 @@ struct ContentView: View {
             didRestoreSession = true
             await store.restoreAuthSession()
         }
+        .onChange(of: store.authSession.role) { _ in
+            if !store.isOwner && selectedTab == .backend {
+                selectedTab = .issue
+            }
+        }
     }
 
     @ViewBuilder
@@ -38,7 +43,11 @@ struct ContentView: View {
         case .printer:
             PrinterSettingsView()
         case .backend:
-            SalesReportView()
+            if store.isOwner {
+                SalesReportView()
+            } else {
+                IssueInvoiceView()
+            }
         case .history:
             ProductCatalogView()
         case .settings:
@@ -97,11 +106,16 @@ private enum AppTab: CaseIterable, Identifiable {
 }
 
 private struct CompactTabBar: View {
+    @EnvironmentObject private var store: AppStore
     @Binding var selection: AppTab
+
+    private var visibleTabs: [AppTab] {
+        AppTab.allCases.filter { store.isOwner || $0 != .backend }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(AppTab.allCases) { tab in
+            ForEach(visibleTabs) { tab in
                 Button {
                     selection = tab
                 } label: {

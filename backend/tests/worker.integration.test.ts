@@ -97,6 +97,9 @@ test("Worker integration: validation errors include request id, localized messag
 test("Worker integration: claim race, status transition, idempotency, invalid payload", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "tenantc", "11223344");
+  await env.DB.prepare(
+    `UPDATE companies SET max_bound_devices = 2 WHERE id = ?`
+  ).bind(tenant.company.id).run();
   const secondDevice = await apiJson<{ token: string; device: { id: string } }>(
     env,
     "/api/devices",
@@ -423,7 +426,12 @@ test("Worker integration: admin hash secret and role authorization", async () =>
     authToken: tenant.authToken,
     body: { name: "Staff OK", sortOrder: 0, status: "顯示" }
   });
-  assert.equal(staffCategory.status, 201);
+  assert.equal(staffCategory.status, 403);
+
+  const staffCategoryList = await api(env, "/api/catalog/categories", {
+    authToken: tenant.authToken
+  });
+  assert.equal(staffCategoryList.status, 200);
 
   const staffDeviceCreate = await api(env, "/api/devices", {
     method: "POST",
@@ -449,6 +457,291 @@ test("Worker integration: admin hash secret and role authorization", async () =>
 
   const devicePending = await api(env, "/api/print-jobs/pending", { token: tenant.device.token });
   assert.equal(devicePending.status, 200);
+});
+
+test("Worker integration: owner manages staff and staff cannot mutate catalog", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantstaff", "44556677");
+  const otherTenant = await registerTenant(env, "staffother", "55443322");
+  await env.DB.prepare(
+    `UPDATE companies SET max_bound_devices = 2 WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const created = await apiJson<{
+    member: { id: number; account: string; role: string; isActive: boolean };
+  }>(env, "/api/members", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: {
+      account: "counterstaff",
+      password: "temp1234",
+      name: "櫃台員工",
+      phone: "0911000000"
+    }
+  }, 201);
+  assert.equal(created.member.role, "staff");
+  assert.equal(created.member.isActive, true);
+
+  const updated = await apiJson<{
+    member: { name: string; phone: string | null; isActive: boolean };
+  }>(env, `/api/members/${created.member.id}`, {
+    method: "PUT",
+    authToken: tenant.authToken,
+    body: { name: "早班員工", phone: "0922000000", isActive: true }
+  });
+  assert.equal(updated.member.name, "早班員工");
+  assert.equal(updated.member.phone, "0922000000");
+
+  await apiJson(env, `/api/members/${created.member.id}/reset-password`, {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: { password: "newpass123" }
+  });
+
+  const members = await apiJson<{ members: Array<{ id: number }> }>(
+    env,
+    "/api/members",
+    { authToken: tenant.authToken }
+  );
+  assert.deepEqual(members.members.map((member) => member.id), [created.member.id]);
+
+  const crossTenantUpdate = await api(env, `/api/members/${created.member.id}`, {
+    method: "PUT",
+    authToken: otherTenant.authToken,
+    body: { name: "不應成功" }
+  });
+  assert.equal(crossTenantUpdate.status, 404);
+  const finalOwnerUpdate = await api(env, `/api/members/${tenant.user.id}`, {
+    method: "PUT",
+    authToken: tenant.authToken,
+    body: { isActive: false }
+  });
+  assert.equal(finalOwnerUpdate.status, 404);
+
+  const staffLogin = await apiJson<{ authToken: string }>(env, "/api/auth/login", {
+    method: "POST",
+    body: {
+      account: "counterstaff",
+      password: "newpass123",
+      deviceName: "Staff iPhone",
+      installationId: "tenantstaff-staff-phone",
+      platform: "ios"
+    }
+  });
+
+  const staffRead = await api(env, "/api/catalog/products", { authToken: staffLogin.authToken });
+  assert.equal(staffRead.status, 200);
+  const staffInvoices = await api(env, "/api/invoices?date=2026-07-14", { authToken: staffLogin.authToken });
+  assert.equal(staffInvoices.status, 200);
+  const staffIssueValidation = await api(env, "/api/invoices", {
+    method: "POST",
+    authToken: staffLogin.authToken,
+    body: {}
+  });
+  assert.equal(staffIssueValidation.status, 400);
+  const staffReprintMissing = await api(env, "/api/invoices/missing/reprint", {
+    method: "POST",
+    authToken: staffLogin.authToken
+  });
+  assert.equal(staffReprintMissing.status, 404);
+  const staffWrite = await api(env, "/api/catalog/categories", {
+    method: "POST",
+    authToken: staffLogin.authToken,
+    body: { name: "不可新增", sortOrder: 0, status: "顯示" }
+  });
+  assert.equal(staffWrite.status, 403);
+  const staffMemberList = await api(env, "/api/members", { authToken: staffLogin.authToken });
+  assert.equal(staffMemberList.status, 403);
+  const staffReport = await api(
+    env,
+    "/api/reports/sales?startDate=2026-07-01&endDate=2026-07-14",
+    { authToken: staffLogin.authToken }
+  );
+  assert.equal(staffReport.status, 403);
+  const staffVoid = await api(env, "/api/invoices/not-owned-by-staff/void", {
+    method: "POST",
+    authToken: staffLogin.authToken
+  });
+  assert.equal(staffVoid.status, 403);
+
+  await apiJson(env, `/api/members/${created.member.id}`, {
+    method: "DELETE",
+    authToken: tenant.authToken
+  });
+  const deletionAudit = await env.DB.prepare(
+    `SELECT action, details_json FROM audit_logs
+     WHERE company_id = ? AND target_type = 'user' AND target_id = ? AND action = 'staff.delete'`
+  ).bind(tenant.company.id, String(created.member.id)).first<{ action: string; details_json: string }>();
+  assert.equal(deletionAudit?.action, "staff.delete");
+  assert.equal(deletionAudit?.details_json.includes("newpass123"), false);
+  const activeMembersAfterDelete = await apiJson<{ members: Array<{ id: number }> }>(
+    env,
+    "/api/members",
+    { authToken: tenant.authToken }
+  );
+  assert.equal(activeMembersAfterDelete.members.some((member) => member.id === created.member.id), false);
+  const allMembersAfterDelete = await apiJson<{ members: Array<{ id: number; isActive: boolean }> }>(
+    env,
+    "/api/members?includeInactive=true",
+    { authToken: tenant.authToken }
+  );
+  assert.equal(allMembersAfterDelete.members.find((member) => member.id === created.member.id)?.isActive, false);
+  const disabledSession = await api(env, "/api/catalog/products", { authToken: staffLogin.authToken });
+  assert.equal(disabledSession.status, 401);
+  const disabledLogin = await api(env, "/api/auth/login", {
+    method: "POST",
+    body: {
+      account: "counterstaff",
+      password: "newpass123",
+      deviceName: "Staff iPhone",
+      installationId: "tenantstaff-staff-phone",
+      platform: "ios"
+    }
+  });
+  assert.equal(disabledLogin.status, 403);
+});
+
+test("Worker integration: company device quota counts installations and releases one device", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "tenantquota", "66778899");
+
+  const samePhone = await apiJson<{
+    authToken: string;
+    company: { deviceLimit: number; deviceUsed: number };
+  }>(
+    env,
+    "/api/auth/login",
+    {
+      method: "POST",
+      body: {
+        account: "tenantquota",
+        password: "secret123",
+        deviceName: "Primary iPhone",
+        installationId: "tenantquota-device",
+        platform: "ios"
+      }
+    }
+  );
+  assert.equal(samePhone.company.deviceLimit, 1);
+  assert.equal(samePhone.company.deviceUsed, 1);
+  await apiJson(env, "/api/auth/logout", {
+    method: "POST",
+    authToken: samePhone.authToken,
+    body: {}
+  });
+  const afterLogout = await apiJson<{ deviceUsed: number }>(
+    env,
+    "/api/devices",
+    { authToken: tenant.authToken }
+  );
+  assert.equal(afterLogout.deviceUsed, 1);
+
+  const full = await api(env, "/api/auth/login", {
+    method: "POST",
+    body: {
+      account: "tenantquota",
+      password: "secret123",
+      deviceName: "Second iPhone",
+      installationId: "tenantquota-second",
+      platform: "ios"
+    }
+  });
+  assert.equal(full.status, 409);
+  const fullPayload = await full.json() as { code: string; deviceLimit: number; deviceUsed: number };
+  assert.equal(fullPayload.code, "device_limit_reached");
+  assert.equal(fullPayload.deviceLimit, 1);
+  assert.equal(fullPayload.deviceUsed, 1);
+
+  await apiJson(env, `/api/admin/companies/${tenant.company.id}/device-limit`, {
+    method: "PATCH",
+    token: "admin-token",
+    body: { maxBoundDevices: 2 }
+  });
+
+  const raceBodies = ["tenantquota-second", "tenantquota-third"].map((installationId) => api(
+    env,
+    "/api/auth/login",
+    {
+      method: "POST",
+      body: {
+        account: "tenantquota",
+        password: "secret123",
+        deviceName: installationId,
+        installationId,
+        platform: "ios"
+      }
+    }
+  ));
+  const raceResponses = await Promise.all(raceBodies);
+  assert.deepEqual(raceResponses.map((response) => response.status).sort(), [200, 409]);
+
+  const deviceList = await apiJson<{
+    deviceLimit: number;
+    deviceUsed: number;
+    devices: Array<{ id: string; installationId: string | null }>;
+  }>(env, "/api/devices", { authToken: tenant.authToken });
+  assert.equal(deviceList.deviceLimit, 2);
+  assert.equal(deviceList.deviceUsed, 2);
+
+  const removable = deviceList.devices.find((device) => device.installationId !== "tenantquota-device");
+  assert.ok(removable);
+  const lowerThanUsage = await api(env, `/api/admin/companies/${tenant.company.id}/device-limit`, {
+    method: "PATCH",
+    token: "admin-token",
+    body: { maxBoundDevices: 1 }
+  });
+  assert.equal(lowerThanUsage.status, 409);
+  const otherTenant = await registerTenant(env, "quotaother", "77889900");
+  const crossTenantDelete = await api(env, `/api/devices/${removable.id}`, {
+    method: "DELETE",
+    authToken: otherTenant.authToken,
+    body: { unbindCode: "00000000" }
+  });
+  assert.equal(crossTenantDelete.status, 404);
+  const company = await env.DB.prepare(
+    `SELECT unbind_code FROM companies WHERE id = ?`
+  ).bind(tenant.company.id).first<{ unbind_code: string }>();
+  await apiJson(env, `/api/devices/${removable.id}`, {
+    method: "DELETE",
+    authToken: tenant.authToken,
+    body: { unbindCode: company?.unbind_code }
+  });
+
+  const afterRelease = await apiJson<{ deviceUsed: number }>(
+    env,
+    "/api/devices",
+    { authToken: tenant.authToken }
+  );
+  assert.equal(afterRelease.deviceUsed, 1);
+
+  await apiJson(env, `/api/admin/companies/${tenant.company.id}/device-limit`, {
+    method: "PATCH",
+    token: "admin-token",
+    body: { maxBoundDevices: 3 }
+  });
+  for (const installationId of ["tenantquota-fourth", "tenantquota-fifth"]) {
+    await apiJson(env, "/api/auth/login", {
+      method: "POST",
+      body: {
+        account: "tenantquota",
+        password: "secret123",
+        deviceName: installationId,
+        installationId,
+        platform: "ios"
+      }
+    });
+  }
+  const quotaThreeFull = await api(env, "/api/auth/login", {
+    method: "POST",
+    body: {
+      account: "tenantquota",
+      password: "secret123",
+      deviceName: "Sixth iPhone",
+      installationId: "tenantquota-sixth",
+      platform: "ios"
+    }
+  });
+  assert.equal(quotaThreeFull.status, 409);
 });
 
 test("Worker integration: Amego issuance stores official payload once and creates a print job", async () => {

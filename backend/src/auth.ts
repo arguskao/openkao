@@ -59,10 +59,7 @@ export function leaseExpiryTimestamp(minutes = 5): string {
 }
 
 export function requireCatalogWriteAccess(session: UserSession): void {
-  const role = normalizeUserRole(session.role);
-  if (role !== "owner" && role !== "staff") {
-    throw new HttpError(403, "forbidden");
-  }
+  requireOwnerAccess(session);
 }
 
 export function requireOwnerAccess(session: UserSession): void {
