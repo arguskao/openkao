@@ -17,6 +17,7 @@ struct openvoKaoApp: App {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(printerManager)
+                .navigationViewStyle(.stack)
         }
     }
 }
