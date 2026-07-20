@@ -270,7 +270,7 @@ struct ProductCatalogView: View {
 
                             Spacer()
 
-                            Text(catalogPriceLabel(price: product.price, decimalPlaces: store.catalogPriceDecimalPlaces))
+                            Text(product.price == 0 ? "現場報價" : catalogPriceLabel(price: product.price, decimalPlaces: store.catalogPriceDecimalPlaces))
                                 .font(.headline.monospacedDigit())
                         }
 
@@ -561,6 +561,9 @@ private struct ProductEditorSheet: View {
                     TextField("商品名稱", text: $editor.name)
                     TextField("價格", text: $editor.priceText)
                         .keyboardType(.decimalPad)
+                    Text("價格設為 0 元時，此商品會在結帳時要求輸入現場報價。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
 
                     Picker("分類", selection: $editor.categoryID) {
                         Text("未分類").tag(Int?.none)

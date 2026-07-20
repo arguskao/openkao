@@ -12,6 +12,12 @@ struct PrintJob: Identifiable, Codable, Equatable {
     var totalAmount: Int
     var salesAmount: Int?
     var taxAmount: Int?
+    var subtotalAmount: Int?
+    var discountType: String?
+    var discountValue: Int?
+    var discountAmount: Int?
+    var receivedAmount: Int?
+    var changeAmount: Int?
     var invoiceFormatCode: String?
     var isReprint: Bool?
     var items: [PrintJobItem]
@@ -150,6 +156,12 @@ struct ManagedInvoice: Identifiable, Codable, Equatable {
     var carrierId: String?
     var npoban: String?
     var totalAmount: Int
+    var subtotalAmount: Int?
+    var discountType: String?
+    var discountValue: Int?
+    var discountAmount: Int?
+    var receivedAmount: Int?
+    var changeAmount: Int?
     var voidedAt: Date?
     var items: [SalesInvoiceItem]
 

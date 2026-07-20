@@ -4,10 +4,10 @@ enum ReceiptLayout {
     static let paperTitle = "58mm"
     static let textColumns = 32
     static let printableDots = 384
-    static let qrImageWidthDots = 336
-    static let qrCanvasDots = 150
-    static let qrGapDots = 30
-    static let qrLeftMarginDots = 23
+    static let qrImageWidthDots = 360
+    static let qrCanvasDots = 180
+    static let qrGapDots = 0
+    static let qrLeftMarginDots = 12
     static let barcodeHeightDots = 88
 }
 
@@ -84,6 +84,8 @@ struct ReceiptRenderer {
             appendItem(item, taxCode: "TX", to: &data)
         }
 
+        appendCheckoutSummary(job, to: &data)
+
         if isBusinessBuyer(job) {
             let tax = job.taxAmount ?? businessTaxAmount(for: job.totalAmount)
             let sales = job.salesAmount ?? (job.totalAmount - tax)
@@ -94,7 +96,6 @@ struct ReceiptRenderer {
         } else {
             data.appendLine(rule())
             data.appendLine(twoColumn("總計", "\(job.totalAmount)"))
-            data.appendLine(twoColumn("課稅別", "TX"))
         }
 
         data.appendLine("")
@@ -103,6 +104,18 @@ struct ReceiptRenderer {
         data.append(contentsOf: ESC.feed(points: 255))
         data.append(contentsOf: ESC.feed(points: 255))
         return data
+    }
+
+    private func appendCheckoutSummary(_ job: PrintJob, to data: inout Data) {
+        guard let subtotal = job.subtotalAmount else { return }
+        data.appendLine("")
+        data.appendLine(twoColumn("原始總額", "\(subtotal)"))
+        if let receivedAmount = job.receivedAmount {
+            data.appendLine(twoColumn("實收", "\(receivedAmount)"))
+        }
+        if let changeAmount = job.changeAmount {
+            data.appendLine(twoColumn("找零", "\(changeAmount)"))
+        }
     }
 
     func renderTestPrint() throws -> Data {
@@ -222,9 +235,7 @@ struct ReceiptRenderer {
     }
 
     private func itemHeader(for job: PrintJob) -> String {
-        isBusinessBuyer(job)
-            ? fourColumn("品名", "數量", "單價", "金額")
-            : "品名、數量、單價、金額"
+        fourColumn("品名", "數量", "單價", "金額")
     }
 
     private func isBusinessBuyer(_ job: PrintJob) -> Bool {

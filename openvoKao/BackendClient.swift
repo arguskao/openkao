@@ -334,6 +334,7 @@ struct BackendClient {
         buyerIdentifier: String?,
         totalAmount: Int,
         items: [InvoiceIssueItemRequest],
+        checkout: InvoiceCheckoutRequest? = nil,
         shouldPrint: Bool
     ) async throws -> IssuedInvoice {
         try await request(
@@ -345,6 +346,7 @@ struct BackendClient {
                 buyerIdentifier: buyerIdentifier,
                 totalAmount: totalAmount,
                 items: items,
+                checkout: checkout,
                 print: shouldPrint
             )
         )
@@ -723,11 +725,21 @@ struct InvoiceIssueItemRequest: Encodable, Equatable {
     let unitPrice: Int
 }
 
+struct InvoiceCheckoutRequest: Encodable, Equatable {
+    let subtotalAmount: Int
+    let discountType: String?
+    let discountValue: Int?
+    let discountAmount: Int
+    let receivedAmount: Int
+    let changeAmount: Int
+}
+
 private struct InvoiceIssueRequest: Encodable {
     let orderId: String
     let buyerIdentifier: String?
     let totalAmount: Int
     let items: [InvoiceIssueItemRequest]
+    let checkout: InvoiceCheckoutRequest?
     let print: Bool
 }
 

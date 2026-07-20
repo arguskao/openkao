@@ -462,7 +462,8 @@ final class AppStore: ObservableObject {
     func issueInvoice(
         buyerIdentifier: String?,
         totalAmount: Int,
-        items: [InvoiceIssueItemRequest]
+        items: [InvoiceIssueItemRequest],
+        checkout: InvoiceCheckoutRequest
     ) async throws -> IssuedInvoice {
         invoiceSyncStatus = OperationStatus(isSyncing: true, message: "開立發票中")
         do {
@@ -471,6 +472,7 @@ final class AppStore: ObservableObject {
                 buyerIdentifier: buyerIdentifier,
                 totalAmount: totalAmount,
                 items: items,
+                checkout: checkout,
                 shouldPrint: true
             )
             invoiceSyncStatus = OperationStatus(isSyncing: false, message: "已開立發票：\(invoice.invoiceNumber)")

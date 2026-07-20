@@ -50,6 +50,14 @@ type NormalizedIssueInput = {
   totalAmount: number;
   salesAmount: number;
   taxAmount: number;
+  checkout: {
+    subtotalAmount: number;
+    discountType: "amount" | "percentage" | null;
+    discountValue: number | null;
+    discountAmount: number;
+    receivedAmount: number | null;
+    changeAmount: number | null;
+  };
   items: Array<{
     id: string;
     name: string;
@@ -89,7 +97,8 @@ export async function createAmegoInvoice(
   const requestHash = await sha256Hex(JSON.stringify({
     amegoRequest,
     shouldPrint: input.shouldPrint,
-    deviceId: input.deviceId
+    deviceId: input.deviceId,
+    checkout: input.checkout
   }));
 
   const existing = await findIssuance(env, session.company_id, input.orderId, input.idempotencyKey);
@@ -123,7 +132,8 @@ export async function createAmegoInvoice(
         JSON.stringify({
           amegoRequest,
           shouldPrint: input.shouldPrint,
-          deviceId: input.deviceId
+          deviceId: input.deviceId,
+          checkout: input.checkout
         })
       )
       .run();
@@ -209,6 +219,10 @@ function normalizeIssueInput(body: Record<string, unknown>, request: Request): N
     throw new HttpError(400, "total_amount_mismatch");
   }
 
+  const totalAmount = body.totalAmount;
+  const checkout = normalizeCheckout(body.checkout, totalAmount);
+  validateWholeOrderDiscount(items, checkout);
+
   const buyerIdentifier = normalizeOptionalCompanyIdentifier(body.buyerIdentifier, "buyerIdentifier");
   const buyerName = normalizeOptionalBoundedString(body.buyerName, 100)
     ?? (buyerIdentifier ?? "客人");
@@ -218,7 +232,6 @@ function normalizeIssueInput(body: Record<string, unknown>, request: Request): N
 
   validateInvoiceDestination({ buyerIdentifier, carrierType, carrierId, npoban });
 
-  const totalAmount = body.totalAmount;
   const salesAmount = buyerIdentifier ? Math.round(totalAmount / 1.05) : totalAmount;
   const taxAmount = buyerIdentifier ? totalAmount - salesAmount : 0;
   const requestedPrint = body.print == null ? true : body.print;
@@ -239,7 +252,50 @@ function normalizeIssueInput(body: Record<string, unknown>, request: Request): N
     totalAmount,
     salesAmount,
     taxAmount,
+    checkout,
     items
+  };
+}
+
+function normalizeCheckout(value: unknown, totalAmount: number): NormalizedIssueInput["checkout"] {
+  if (value == null) {
+    return {
+      subtotalAmount: totalAmount,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      receivedAmount: null,
+      changeAmount: null
+    };
+  }
+  if (typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "checkout_invalid");
+  const checkout = value as Record<string, unknown>;
+  requireIntegerRange(checkout.subtotalAmount, "checkout.subtotalAmount", { min: totalAmount, max: MAX_MONEY_AMOUNT });
+  requireIntegerRange(checkout.discountAmount, "checkout.discountAmount", { min: 0, max: MAX_MONEY_AMOUNT });
+  requireIntegerRange(checkout.receivedAmount, "checkout.receivedAmount", { min: totalAmount, max: MAX_MONEY_AMOUNT });
+  requireIntegerRange(checkout.changeAmount, "checkout.changeAmount", { min: 0, max: MAX_MONEY_AMOUNT });
+  if (checkout.discountAmount !== checkout.subtotalAmount - totalAmount) throw new HttpError(400, "checkout_amount_mismatch");
+  if (checkout.changeAmount !== checkout.receivedAmount - totalAmount) throw new HttpError(400, "checkout_amount_mismatch");
+
+  const discountType = checkout.discountType == null ? null : checkout.discountType;
+  const discountValue = checkout.discountValue == null ? null : checkout.discountValue;
+  if (discountType == null) {
+    if (discountValue != null || checkout.discountAmount !== 0) throw new HttpError(400, "checkout_discount_invalid");
+  } else {
+    if (discountType !== "amount" && discountType !== "percentage") throw new HttpError(400, "checkout_discount_invalid");
+    requireIntegerRange(discountValue, "checkout.discountValue", { min: discountType === "percentage" ? 1 : 0, max: discountType === "percentage" ? 100 : checkout.subtotalAmount });
+    const expectedDiscount = discountType === "amount"
+      ? discountValue
+      : checkout.subtotalAmount - Math.floor((checkout.subtotalAmount * discountValue + 50) / 100);
+    if (checkout.discountAmount !== expectedDiscount) throw new HttpError(400, "checkout_discount_invalid");
+  }
+  return {
+    subtotalAmount: checkout.subtotalAmount,
+    discountType,
+    discountValue,
+    discountAmount: checkout.discountAmount,
+    receivedAmount: checkout.receivedAmount,
+    changeAmount: checkout.changeAmount
   };
 }
 
@@ -250,9 +306,12 @@ function normalizeInvoiceItem(value: unknown, index: number): NormalizedIssueInp
   const item = value as Record<string, unknown>;
   const name = normalizeRequiredBoundedString(item.name, `items.${index}.name`, 100);
   requireIntegerRange(item.quantity, `items.${index}.quantity`, { min: 1, max: MAX_ITEM_QUANTITY });
-  requireIntegerRange(item.unitPrice, `items.${index}.unitPrice`, { min: 0, max: MAX_MONEY_AMOUNT });
+  requireIntegerRange(item.unitPrice, `items.${index}.unitPrice`, { min: name === "整單折扣" ? -MAX_MONEY_AMOUNT : 0, max: MAX_MONEY_AMOUNT });
+  if (name === "整單折扣" && (item.quantity !== 1 || item.unitPrice >= 0)) {
+    throw new HttpError(400, "checkout_discount_invalid");
+  }
   const amount = item.quantity * item.unitPrice;
-  requireIntegerRange(amount, `items.${index}.amount`, { min: 0, max: MAX_MONEY_AMOUNT });
+  requireIntegerRange(amount, `items.${index}.amount`, { min: -MAX_MONEY_AMOUNT, max: MAX_MONEY_AMOUNT });
   return {
     id: crypto.randomUUID(),
     name,
@@ -260,6 +319,20 @@ function normalizeInvoiceItem(value: unknown, index: number): NormalizedIssueInp
     unitPrice: item.unitPrice,
     amount
   };
+}
+
+function validateWholeOrderDiscount(
+  items: NormalizedIssueInput["items"],
+  checkout: NormalizedIssueInput["checkout"]
+): void {
+  const discountItems = items.filter((item) => item.name === "整單折扣");
+  if (checkout.discountAmount === 0) {
+    if (discountItems.length > 0) throw new HttpError(400, "checkout_discount_invalid");
+    return;
+  }
+  if (discountItems.length !== 1 || discountItems[0].amount !== -checkout.discountAmount) {
+    throw new HttpError(400, "checkout_discount_invalid");
+  }
 }
 
 function validateInvoiceDestination(input: {
@@ -527,6 +600,12 @@ async function saveIssuedInvoice(
     totalAmount: input.totalAmount,
     salesAmount: input.salesAmount,
     taxAmount: input.taxAmount,
+    subtotalAmount: input.checkout.subtotalAmount,
+    discountType: input.checkout.discountType ?? undefined,
+    discountValue: input.checkout.discountValue ?? undefined,
+    discountAmount: input.checkout.discountAmount,
+    receivedAmount: input.checkout.receivedAmount ?? undefined,
+    changeAmount: input.checkout.changeAmount ?? undefined,
     invoiceFormatCode: input.buyerIdentifier ? "25" : undefined,
     items: input.items.map((item) => ({
       id: item.id,
@@ -546,9 +625,10 @@ async function saveIssuedInvoice(
          seller_name, seller_identifier, buyer_identifier, total_amount,
          amego_response_json, amego_order_id, status, invoice_date, invoice_time,
          sales_amount, tax_amount, barcode_payload, qrcode_left, qrcode_right,
-         carrier_type, carrier_id, npoban
+         carrier_type, carrier_id, npoban, subtotal_amount, discount_type, discount_value,
+         discount_amount, received_amount, change_amount
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       invoiceId,
       session.company_id,
@@ -570,7 +650,13 @@ async function saveIssuedInvoice(
       official.qrcodeRight,
       input.carrierType || null,
       input.carrierId || null,
-      input.npoban || null
+      input.npoban || null,
+      input.checkout.subtotalAmount,
+      input.checkout.discountType,
+      input.checkout.discountValue,
+      input.checkout.discountAmount,
+      input.checkout.receivedAmount,
+      input.checkout.changeAmount
     ),
     ...input.items.map((item) => env.DB.prepare(
       `INSERT INTO invoice_items (id, invoice_id, name, quantity, unit_price, amount)
@@ -686,6 +772,7 @@ function restoreNormalizedInput(requestJson: string, orderId: string): Normalize
     amegoRequest?: AmegoInvoiceRequest;
     shouldPrint?: boolean;
     deviceId?: string | null;
+    checkout?: NormalizedIssueInput["checkout"];
   } & Partial<AmegoInvoiceRequest>;
   const request = stored.amegoRequest ?? stored as AmegoInvoiceRequest;
   const buyerIdentifier = request.BuyerIdentifier === "0000000000" ? null : request.BuyerIdentifier;
@@ -709,6 +796,14 @@ function restoreNormalizedInput(requestJson: string, orderId: string): Normalize
     totalAmount: Number(request.TotalAmount),
     salesAmount: Number(request.SalesAmount),
     taxAmount: Number(request.TaxAmount),
+    checkout: stored.checkout ?? {
+      subtotalAmount: Number(request.TotalAmount),
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      receivedAmount: null,
+      changeAmount: null
+    },
     items
   };
 }

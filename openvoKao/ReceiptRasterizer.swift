@@ -52,7 +52,8 @@ struct ESCPosRasterImage {
 
 enum ReceiptRasterizer {
     private static let context = CIContext(options: [.useSoftwareRenderer: true])
-    private static let quietZoneModules = 0
+    // QR scanners require a clear border around the symbol. Four modules is the QR standard.
+    private static let quietZoneModules = 4
 
     static func qrPayloadData(_ payload: String) -> Data {
         Data(payload.utf8)
@@ -215,9 +216,8 @@ enum ReceiptRasterizer {
             throw ReceiptRasterError.invalidQRCode
         }
         var matrix = try monochromeMatrix(from: image, invalidError: .invalidQRCode)
-        // CIQRCodeGenerator 會在 QR 模組四周自帶 1 module 的邊框（quiet zone），
-        // 如果保留它再額外加 quiet zone，QR 符號會被縮得很小，列印機難以辨識。
-        // 裁掉這層內建邊框，讓 ReceiptRasterizer 自己控制 quiet zone。
+        // CIQRCodeGenerator 會在 QR 模組四周自帶 1 module 的邊框。
+        // 裁掉這層後，由 ReceiptRasterizer 統一補足標準的 4-module quiet zone。
         matrix.cropBorder(thickness: 1)
         return matrix
     }

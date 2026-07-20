@@ -136,7 +136,9 @@ function localizedMessageForCode(code: string): string {
     request_body_too_large: "請求內容太大。",
     staff_not_found: "找不到這個員工帳號。",
     unbind_code_invalid: "解除綁定碼不正確。",
-    total_amount_mismatch: "總金額必須等於所有品項小計加總。"
+    total_amount_mismatch: "總金額必須等於所有品項小計加總。",
+    checkout_amount_mismatch: "結帳金額與應付金額不一致。",
+    checkout_discount_invalid: "折扣資料不正確。"
   };
 
   if (messages[code]) {

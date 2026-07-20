@@ -9,6 +9,12 @@ export type PrintJobPayload = {
   totalAmount: number;
   salesAmount?: number;
   taxAmount?: number;
+  subtotalAmount?: number;
+  discountType?: "amount" | "percentage";
+  discountValue?: number;
+  discountAmount?: number;
+  receivedAmount?: number;
+  changeAmount?: number;
   invoiceFormatCode?: string;
   isReprint?: boolean;
   items: Array<{

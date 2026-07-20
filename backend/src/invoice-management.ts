@@ -28,6 +28,12 @@ type InvoiceRow = {
   seller_identifier: string;
   buyer_identifier: string | null;
   total_amount: number;
+  subtotal_amount: number | null;
+  discount_type: "amount" | "percentage" | null;
+  discount_value: number | null;
+  discount_amount: number | null;
+  received_amount: number | null;
+  change_amount: number | null;
   sales_amount: number;
   tax_amount: number;
   status: string;
@@ -189,6 +195,12 @@ export async function reprintInvoice(
     totalAmount: row.total_amount,
     salesAmount: row.sales_amount,
     taxAmount: row.tax_amount,
+    subtotalAmount: row.subtotal_amount ?? undefined,
+    discountType: row.discount_type ?? undefined,
+    discountValue: row.discount_value ?? undefined,
+    discountAmount: row.discount_amount ?? undefined,
+    receivedAmount: row.received_amount ?? undefined,
+    changeAmount: row.change_amount ?? undefined,
     invoiceFormatCode: row.buyer_identifier ? "25" : undefined,
     isReprint: true,
     items: items.map((item) => ({
@@ -272,6 +284,12 @@ function invoiceJson(row: InvoiceRow, items: ItemRow[]) {
     carrierId: row.carrier_id,
     npoban: row.npoban,
     totalAmount: row.total_amount,
+    subtotalAmount: row.subtotal_amount,
+    discountType: row.discount_type,
+    discountValue: row.discount_value,
+    discountAmount: row.discount_amount,
+    receivedAmount: row.received_amount,
+    changeAmount: row.change_amount,
     voidedAt: row.voided_at,
     items: items.map((item) => ({
       id: item.id,

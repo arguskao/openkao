@@ -39,10 +39,7 @@ final class ReceiptRendererTests: XCTestCase {
             0x1D, 0x21, 0x11,
             0x1C, 0x21, 0x0C
         ] + (GBKTestEncoding.data(from: "電子發票證明聯") ?? [])))
-        XCTAssertTrue(data.containsBytes([
-            0x1D, 0x21, 0x11,
-            0x1C, 0x21, 0x0C
-        ] + Array("AB-12345678".utf8)))
+        XCTAssertTrue(data.containsGBKText("AB-12345678"))
         XCTAssertTrue(data.containsBytes([
             0x1D, 0x21, 0x00,
             0x1C, 0x21, 0x00,
@@ -101,15 +98,15 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertEqual(images.count, 2)
         XCTAssertEqual(images[0].widthBytes, 48)
         XCTAssertEqual(images[0].height, 88)
-        XCTAssertEqual(images[1].widthBytes, 42)
-        XCTAssertEqual(images[1].height, 150)
+        XCTAssertEqual(images[1].widthBytes, 45)
+        XCTAssertEqual(images[1].height, 180)
         XCTAssertGreaterThanOrEqual(images[0].minimumBlackRunWidth, 2)
         XCTAssertTrue(data.containsBytes([
             0x1B, 0x33, 0x1E,
             0x1D, 0x4C, 0x17, 0x00,
             0x1B, 0x21, 0x00,
             0x1B, 0x61, 0x00,
-            0x1D, 0x76, 0x30, 0x00, 0x2A, 0x00, 0x96, 0x00
+            0x1D, 0x76, 0x30, 0x00, 0x2D, 0x00, 0xB4, 0x00
         ]))
         XCTAssertTrue(data.containsBytes([0x1D, 0x4C, 0x00, 0x00]))
         XCTAssertFalse(data.containsBytes([0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41]))
@@ -169,8 +166,33 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertTrue(printedText.containsGBKText("奶茶"))
         XCTAssertTrue(printedText.containsGBKText("45TX"))
         XCTAssertTrue(printedText.containsGBKText("90TX"))
-        XCTAssertTrue(printedText.containsGBKText("課稅別"))
-        XCTAssertTrue(printedText.containsGBKText("TX"))
+        XCTAssertFalse(printedText.containsGBKText("課稅別"))
+    }
+
+    func testConsumerReceiptUsesAlignedFourColumnItemLayout() throws {
+        var job = makeJob()
+        job.buyerIdentifier = nil
+
+        let data = try ReceiptRenderer().render(job: job)
+        let lines = data.escposTextLinesForTests
+
+        XCTAssertTrue(lines.containsGBKLine("品名          數量  單價    金額"))
+        XCTAssertTrue(lines.containsGBKLine("加蛋             3    15    45TX"))
+        XCTAssertTrue(lines.containsGBKLine("奶茶             2    45    90TX"))
+        XCTAssertFalse(Data(lines.flatMap { $0 }).containsGBKText("單價*數量"))
+        XCTAssertFalse(Data(lines.flatMap { $0 }).containsGBKText("品名、數量、單價、金額"))
+    }
+
+    func testConsumerReceiptKeepsTaxTypeWithItemAmount() throws {
+        var job = makeJob()
+        job.buyerIdentifier = nil
+
+        let data = try ReceiptRenderer().render(job: job)
+        let lines = data.escposTextLinesForTests
+
+        XCTAssertTrue(lines.containsGBKLine("加蛋             3    15    45TX"))
+        XCTAssertTrue(lines.containsGBKLine("奶茶             2    45    90TX"))
+        XCTAssertFalse(Data(lines.flatMap { $0 }).containsGBKText("課稅別"))
     }
 
     func testReprintAddsReprintMarker() throws {
@@ -352,6 +374,13 @@ private struct ESCPosRasterFixture {
             runs.append(current)
         }
         return runs.min() ?? 0
+    }
+}
+
+private extension Array where Element == [UInt8] {
+    func containsGBKLine(_ text: String) -> Bool {
+        guard let bytes = GBKTestEncoding.data(from: text) else { return false }
+        return contains { $0 == bytes }
     }
 }
 
