@@ -136,6 +136,13 @@ final class ReceiptRendererTests: XCTestCase {
         XCTAssertGreaterThan(rightBlackDots, 0)
     }
 
+    func testOfficialDualQrUsesVersion6Modules() throws {
+        let job = makeJob()
+
+        XCTAssertEqual(try ReceiptRasterizer.officialQRModuleWidth(for: job.leftQRCodePayload!), 41)
+        XCTAssertEqual(try ReceiptRasterizer.officialQRModuleWidth(for: job.rightQRCodePayload!), 41)
+    }
+
     func testLegacySingleQrRemainsCompatible() throws {
         var job = makeJob()
         job.leftQRCodePayload = nil

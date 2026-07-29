@@ -1,4 +1,3 @@
-import CoreImage
 import Foundation
 
 enum ReceiptRasterError: LocalizedError {
@@ -51,12 +50,16 @@ struct ESCPosRasterImage {
 }
 
 enum ReceiptRasterizer {
-    private static let context = CIContext(options: [.useSoftwareRenderer: true])
     // QR scanners require a clear border around the symbol. Four modules is the QR standard.
     private static let quietZoneModules = 4
+    private static let officialQRCodeVersion = 6
 
     static func qrPayloadData(_ payload: String) -> Data {
         Data(payload.utf8)
+    }
+
+    static func officialQRModuleWidth(for payload: String) throws -> Int {
+        try qrMatrix(payload: payload).width
     }
 
     static func dualQRCode(
@@ -207,19 +210,14 @@ enum ReceiptRasterizer {
     ]
 
     private static func qrMatrix(payload: String) throws -> MonochromeMatrix {
-        guard !payload.isEmpty, let filter = CIFilter(name: "CIQRCodeGenerator") else {
+        guard !payload.isEmpty else {
             throw ReceiptRasterError.invalidQRCode
         }
-        filter.setValue(qrPayloadData(payload), forKey: "inputMessage")
-        filter.setValue("L", forKey: "inputCorrectionLevel")
-        guard let image = filter.outputImage else {
-            throw ReceiptRasterError.invalidQRCode
-        }
-        var matrix = try monochromeMatrix(from: image, invalidError: .invalidQRCode)
-        // CIQRCodeGenerator 會在 QR 模組四周自帶 1 module 的邊框。
-        // 裁掉這層後，由 ReceiptRasterizer 統一補足標準的 4-module quiet zone。
-        matrix.cropBorder(thickness: 1)
-        return matrix
+        return try FixedVersionQRCode.make(
+            payload: qrPayloadData(payload),
+            version: officialQRCodeVersion,
+            correction: .low
+        )
     }
 
     private static func drawQRMatrix(
@@ -248,41 +246,6 @@ enum ReceiptRasterizer {
         }
     }
 
-    private static func monochromeMatrix(
-        from image: CIImage,
-        invalidError: ReceiptRasterError
-    ) throws -> MonochromeMatrix {
-        let extent = image.extent.integral
-        let width = Int(extent.width)
-        let height = Int(extent.height)
-        guard width > 0, height > 0 else {
-            throw invalidError
-        }
-
-        // 先把 CIImage 轉成 CGImage，再用 CGBitmapContext 畫出灰階 pixel。
-        // 在真機上直接呼叫 CIContext.render(toBitmap:) 到 L8 會靜默失敗，
-        // 導致 pixels 全是 255（全白）。走 CGImage + CGBitmapContext 更穩定。
-        guard let cgImage = context.createCGImage(image, from: extent) else {
-            throw invalidError
-        }
-
-        let bytesPerRow = width
-        var pixels = Array(repeating: UInt8(255), count: width * height)
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
-        guard let bitmapContext = CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: bitmapInfo.rawValue
-        ) else {
-            throw invalidError
-        }
-        bitmapContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
-        return MonochromeMatrix(width: width, height: height, pixels: pixels)
-    }
 }
 
 private struct MonochromeMatrix {
@@ -309,5 +272,449 @@ private struct MonochromeMatrix {
 
     func hasBlackPixel(inColumn x: Int) -> Bool {
         (0..<height).contains { isBlack(x: x, y: $0) }
+    }
+}
+
+private enum FixedVersionQRCode {
+    enum ErrorCorrection {
+        case low
+
+        var formatBits: Int {
+            switch self {
+            case .low:
+                return 0b01
+            }
+        }
+    }
+
+    private static let generatorBase: UInt8 = 0x02
+    private static let fieldPolynomial: UInt16 = 0x11D
+    private static let maxVersion = 6
+    private static let size = 41
+    private static let dataCodewords = 136
+    private static let eccCodewordsPerBlock = 18
+    private static let numberOfBlocks = 2
+    private static let dataCodewordsPerBlock = 68
+    private static let remainderBits = 7
+    private static let alignmentPatternCenters = [6, 34]
+    private static let penaltyN1 = 3
+    private static let penaltyN2 = 3
+    private static let penaltyN3 = 40
+    private static let penaltyN4 = 10
+
+    static func make(payload: Data, version: Int, correction: ErrorCorrection) throws -> MonochromeMatrix {
+        guard version == maxVersion else {
+            throw ReceiptRasterError.invalidQRCode
+        }
+        let codewords = try encodeCodewords(payload)
+        let bits = codewords.flatMap { byteToBits($0) } + Array(repeating: false, count: remainderBits)
+        var bestModules: [[Bool]]?
+        var bestPenalty = Int.max
+
+        for mask in 0..<8 {
+            var qr = QRCanvas(size: size)
+            qr.drawFunctionPatterns()
+            qr.drawCodewords(bits)
+            qr.applyMask(mask)
+            qr.drawFormatBits(mask: mask, correction: correction)
+            let penalty = qr.penaltyScore()
+            if penalty < bestPenalty {
+                bestPenalty = penalty
+                bestModules = qr.modules
+            }
+        }
+
+        guard let modules = bestModules else {
+            throw ReceiptRasterError.invalidQRCode
+        }
+        return MonochromeMatrix(
+            width: size,
+            height: size,
+            pixels: modules.flatMap { row in row.map { $0 ? UInt8(0) : UInt8(255) } }
+        )
+    }
+
+    private static func encodeCodewords(_ payload: Data) throws -> [UInt8] {
+        let capacityBits = dataCodewords * 8
+        var bits: [Bool] = []
+        appendBits(0b0100, count: 4, to: &bits)
+        appendBits(payload.count, count: 8, to: &bits)
+        for byte in payload {
+            appendBits(Int(byte), count: 8, to: &bits)
+        }
+        guard bits.count <= capacityBits else {
+            throw ReceiptRasterError.invalidQRCode
+        }
+        appendBits(0, count: min(4, capacityBits - bits.count), to: &bits)
+        while !bits.count.isMultiple(of: 8) {
+            bits.append(false)
+        }
+
+        var data = bitsToBytes(bits)
+        var useFirstPad = true
+        while data.count < dataCodewords {
+            data.append(useFirstPad ? 0xEC : 0x11)
+            useFirstPad.toggle()
+        }
+
+        let blocks = stride(from: 0, to: data.count, by: dataCodewordsPerBlock).map {
+            Array(data[$0..<($0 + dataCodewordsPerBlock)])
+        }
+        guard blocks.count == numberOfBlocks else {
+            throw ReceiptRasterError.invalidQRCode
+        }
+
+        let generator = makeReedSolomonGenerator(degree: eccCodewordsPerBlock)
+        let eccBlocks = blocks.map { makeReedSolomonRemainder(data: $0, generator: generator) }
+
+        var interleaved: [UInt8] = []
+        for index in 0..<dataCodewordsPerBlock {
+            for block in blocks {
+                interleaved.append(block[index])
+            }
+        }
+        for index in 0..<eccCodewordsPerBlock {
+            for block in eccBlocks {
+                interleaved.append(block[index])
+            }
+        }
+        return interleaved
+    }
+
+    private static func appendBits(_ value: Int, count: Int, to bits: inout [Bool]) {
+        guard count > 0 else { return }
+        for shift in stride(from: count - 1, through: 0, by: -1) {
+            bits.append(((value >> shift) & 1) != 0)
+        }
+    }
+
+    private static func bitsToBytes(_ bits: [Bool]) -> [UInt8] {
+        stride(from: 0, to: bits.count, by: 8).map { offset in
+            var value = 0
+            for bitIndex in 0..<8 where offset + bitIndex < bits.count {
+                value = (value << 1) | (bits[offset + bitIndex] ? 1 : 0)
+            }
+            return UInt8(value)
+        }
+    }
+
+    private static func byteToBits(_ byte: UInt8) -> [Bool] {
+        (0..<8).map { shift in
+            ((byte >> (7 - shift)) & 1) != 0
+        }
+    }
+
+    private static func makeReedSolomonGenerator(degree: Int) -> [UInt8] {
+        var generator = [UInt8](repeating: 0, count: degree)
+        generator[degree - 1] = 1
+        var root: UInt8 = 1
+        for _ in 0..<degree {
+            for index in 0..<degree {
+                generator[index] = multiply(generator[index], root)
+                if index + 1 < degree {
+                    generator[index] ^= generator[index + 1]
+                }
+            }
+            root = multiply(root, generatorBase)
+        }
+        return generator
+    }
+
+    private static func makeReedSolomonRemainder(data: [UInt8], generator: [UInt8]) -> [UInt8] {
+        var remainder = [UInt8](repeating: 0, count: generator.count)
+        for byte in data {
+            let factor = byte ^ remainder.removeFirst()
+            remainder.append(0)
+            guard factor != 0 else { continue }
+            for index in 0..<generator.count {
+                remainder[index] ^= multiply(generator[index], factor)
+            }
+        }
+        return remainder
+    }
+
+    private static func multiply(_ x: UInt8, _ y: UInt8) -> UInt8 {
+        var a = UInt16(x)
+        var b = UInt16(y)
+        var result: UInt16 = 0
+        while b != 0 {
+            if (b & 1) != 0 {
+                result ^= a
+            }
+            b >>= 1
+            a <<= 1
+            if (a & 0x100) != 0 {
+                a ^= fieldPolynomial
+            }
+        }
+        return UInt8(result & 0xFF)
+    }
+
+    private struct QRCanvas {
+        let size: Int
+        var modules: [[Bool]]
+        var functionModules: [[Bool]]
+
+        init(size: Int) {
+            self.size = size
+            self.modules = Array(
+                repeating: Array(repeating: false, count: size),
+                count: size
+            )
+            self.functionModules = Array(
+                repeating: Array(repeating: false, count: size),
+                count: size
+            )
+        }
+
+        mutating func drawFunctionPatterns() {
+            drawFinderPattern(x: 3, y: 3)
+            drawFinderPattern(x: size - 4, y: 3)
+            drawFinderPattern(x: 3, y: size - 4)
+            reserveFormatInformation()
+
+            for centerY in alignmentPatternCenters {
+                for centerX in alignmentPatternCenters {
+                    let overlapsTop = centerY == 6 && (centerX == 6 || centerX == size - 7)
+                    let overlapsLeftBottom = centerX == 6 && centerY == size - 7
+                    if overlapsTop || overlapsLeftBottom {
+                        continue
+                    }
+                    drawAlignmentPattern(x: centerX, y: centerY)
+                }
+            }
+
+            for index in 8..<(size - 8) {
+                setFunctionModule(x: index, y: 6, isBlack: index.isMultiple(of: 2))
+                setFunctionModule(x: 6, y: index, isBlack: index.isMultiple(of: 2))
+            }
+            setFunctionModule(x: 8, y: size - 8, isBlack: true)
+        }
+
+        mutating func drawCodewords(_ bits: [Bool]) {
+            var bitIndex = 0
+            var upward = true
+            var column = size - 1
+
+            while column > 0 {
+                if column == 6 {
+                    column -= 1
+                }
+                for rowIndex in 0..<size {
+                    let row = upward ? (size - 1 - rowIndex) : rowIndex
+                    for columnOffset in 0..<2 {
+                        let x = column - columnOffset
+                        guard !functionModules[row][x], bitIndex < bits.count else {
+                            continue
+                        }
+                        modules[row][x] = bits[bitIndex]
+                        bitIndex += 1
+                    }
+                }
+                upward.toggle()
+                column -= 2
+            }
+        }
+
+        mutating func applyMask(_ mask: Int) {
+            for y in 0..<size {
+                for x in 0..<size where !functionModules[y][x] {
+                    if maskApplies(mask, x: x, y: y) {
+                        modules[y][x].toggle()
+                    }
+                }
+            }
+        }
+
+        mutating func drawFormatBits(mask: Int, correction: ErrorCorrection) {
+            let data = (correction.formatBits << 3) | mask
+            var rem = data
+            for _ in 0..<10 {
+                rem <<= 1
+            }
+            for shift in stride(from: 14, through: 10, by: -1) {
+                if ((rem >> shift) & 1) != 0 {
+                    rem ^= 0x537 << (shift - 10)
+                }
+            }
+            let bits = ((data << 10) | rem) ^ 0x5412
+
+            for index in 0...5 {
+                setFunctionModule(x: 8, y: index, isBlack: ((bits >> index) & 1) != 0)
+            }
+            setFunctionModule(x: 8, y: 7, isBlack: ((bits >> 6) & 1) != 0)
+            setFunctionModule(x: 8, y: 8, isBlack: ((bits >> 7) & 1) != 0)
+            setFunctionModule(x: 7, y: 8, isBlack: ((bits >> 8) & 1) != 0)
+            for index in 9...14 {
+                setFunctionModule(x: 14 - index, y: 8, isBlack: ((bits >> index) & 1) != 0)
+            }
+
+            for index in 0...7 {
+                setFunctionModule(x: size - 1 - index, y: 8, isBlack: ((bits >> index) & 1) != 0)
+            }
+            for index in 8...14 {
+                setFunctionModule(x: 8, y: size - 15 + index, isBlack: ((bits >> index) & 1) != 0)
+            }
+            setFunctionModule(x: 8, y: size - 8, isBlack: true)
+        }
+
+        func penaltyScore() -> Int {
+            penaltyRuns() + penaltyBlocks() + penaltyFinderLikePatterns() + penaltyDarkBalance()
+        }
+
+        private mutating func reserveFormatInformation() {
+            for index in 0..<9 {
+                if index != 6 {
+                    functionModules[index][8] = true
+                    functionModules[8][index] = true
+                }
+            }
+            for index in 0..<8 {
+                functionModules[size - 1 - index][8] = true
+                functionModules[8][size - 1 - index] = true
+            }
+            functionModules[size - 8][8] = true
+        }
+
+        private mutating func drawFinderPattern(x: Int, y: Int) {
+            for deltaY in -4...4 {
+                for deltaX in -4...4 {
+                    let xx = x + deltaX
+                    let yy = y + deltaY
+                    guard (0..<size).contains(xx), (0..<size).contains(yy) else {
+                        continue
+                    }
+                    let distance = max(abs(deltaX), abs(deltaY))
+                    let isBlack = distance != 2 && distance != 4
+                    setFunctionModule(x: xx, y: yy, isBlack: isBlack)
+                }
+            }
+        }
+
+        private mutating func drawAlignmentPattern(x: Int, y: Int) {
+            for deltaY in -2...2 {
+                for deltaX in -2...2 {
+                    let distance = max(abs(deltaX), abs(deltaY))
+                    setFunctionModule(x: x + deltaX, y: y + deltaY, isBlack: distance != 1)
+                }
+            }
+        }
+
+        private mutating func setFunctionModule(x: Int, y: Int, isBlack: Bool) {
+            guard (0..<size).contains(x), (0..<size).contains(y) else { return }
+            modules[y][x] = isBlack
+            functionModules[y][x] = true
+        }
+
+        private func maskApplies(_ mask: Int, x: Int, y: Int) -> Bool {
+            switch mask {
+            case 0:
+                return (x + y).isMultiple(of: 2)
+            case 1:
+                return y.isMultiple(of: 2)
+            case 2:
+                return x.isMultiple(of: 3)
+            case 3:
+                return (x + y).isMultiple(of: 3)
+            case 4:
+                return ((y / 2) + (x / 3)).isMultiple(of: 2)
+            case 5:
+                let value = (x * y) % 2 + (x * y) % 3
+                return value == 0
+            case 6:
+                let value = ((x * y) % 2 + (x * y) % 3) % 2
+                return value == 0
+            case 7:
+                let value = ((x + y) % 2 + (x * y) % 3) % 2
+                return value == 0
+            default:
+                return false
+            }
+        }
+
+        private func penaltyRuns() -> Int {
+            var score = 0
+            for row in modules {
+                score += penaltyRunSequence(row)
+            }
+            for x in 0..<size {
+                let column = (0..<size).map { modules[$0][x] }
+                score += penaltyRunSequence(column)
+            }
+            return score
+        }
+
+        private func penaltyRunSequence(_ values: [Bool]) -> Int {
+            guard var current = values.first else { return 0 }
+            var runLength = 1
+            var score = 0
+
+            for value in values.dropFirst() {
+                if value == current {
+                    runLength += 1
+                    continue
+                }
+                if runLength >= 5 {
+                    score += penaltyN1 + (runLength - 5)
+                }
+                current = value
+                runLength = 1
+            }
+            if runLength >= 5 {
+                score += penaltyN1 + (runLength - 5)
+            }
+            return score
+        }
+
+        private func penaltyBlocks() -> Int {
+            var score = 0
+            for y in 0..<(size - 1) {
+                for x in 0..<(size - 1) {
+                    let value = modules[y][x]
+                    if modules[y][x + 1] == value,
+                       modules[y + 1][x] == value,
+                       modules[y + 1][x + 1] == value {
+                        score += penaltyN2
+                    }
+                }
+            }
+            return score
+        }
+
+        private func penaltyFinderLikePatterns() -> Int {
+            let pattern1 = [true, false, true, true, true, false, true, false, false, false, false]
+            let pattern2 = [false, false, false, false, true, false, true, true, true, false, true]
+            var score = 0
+
+            for row in modules {
+                score += penaltyPatternSequence(row, pattern1, pattern2)
+            }
+            for x in 0..<size {
+                let column = (0..<size).map { modules[$0][x] }
+                score += penaltyPatternSequence(column, pattern1, pattern2)
+            }
+            return score
+        }
+
+        private func penaltyPatternSequence(_ values: [Bool], _ pattern1: [Bool], _ pattern2: [Bool]) -> Int {
+            guard values.count >= pattern1.count else { return 0 }
+            var score = 0
+            for start in 0...(values.count - pattern1.count) {
+                let slice = Array(values[start..<(start + pattern1.count)])
+                if slice == pattern1 || slice == pattern2 {
+                    score += penaltyN3
+                }
+            }
+            return score
+        }
+
+        private func penaltyDarkBalance() -> Int {
+            let dark = modules.reduce(0) { partial, row in
+                partial + row.reduce(0) { $0 + ($1 ? 1 : 0) }
+            }
+            let total = size * size
+            let percent = (Double(dark) * 100.0) / Double(total)
+            return Int(abs(percent - 50.0) / 5.0) * penaltyN4
+        }
     }
 }
