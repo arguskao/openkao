@@ -53,7 +53,12 @@ struct CheckoutSummary: Equatable {
 }
 
 enum CheckoutCalculator {
-    static func summary(subtotal: Int, discount: CheckoutDiscount?, receivedAmount: Int?) -> CheckoutSummary? {
+    static func summary(
+        subtotal: Int,
+        discount: CheckoutDiscount?,
+        receivedAmount: Int?,
+        defaultToExactPayment: Bool = false
+    ) -> CheckoutSummary? {
         guard subtotal > 0 else { return nil }
         guard let discountAmount = discountAmount(subtotal: subtotal, discount: discount) else { return nil }
         let total = subtotal - discountAmount
@@ -63,7 +68,7 @@ enum CheckoutCalculator {
             discount: discount,
             discountAmount: discountAmount,
             total: total,
-            receivedAmount: receivedAmount
+            receivedAmount: receivedAmount ?? (defaultToExactPayment ? total : nil)
         )
     }
 

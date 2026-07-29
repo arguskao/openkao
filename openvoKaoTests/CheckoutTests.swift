@@ -40,4 +40,16 @@ final class CheckoutTests: XCTestCase {
 
         XCTAssertEqual(summary.shortageAmount, 5)
     }
+
+    func testMissingReceivedAmountDefaultsToExactPaymentWhenRequested() throws {
+        let summary = try XCTUnwrap(CheckoutCalculator.summary(
+            subtotal: 1_119,
+            discount: nil,
+            receivedAmount: nil,
+            defaultToExactPayment: true
+        ))
+
+        XCTAssertEqual(summary.receivedAmount, 1_119)
+        XCTAssertEqual(summary.changeAmount, 0)
+    }
 }

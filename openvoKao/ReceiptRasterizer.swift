@@ -68,32 +68,22 @@ enum ReceiptRasterizer {
     ) throws -> ESCPosRasterImage {
         let left = try qrMatrix(payload: leftPayload)
         let right = try qrMatrix(payload: rightPayload)
-        let canvasSize = ReceiptLayout.qrCanvasDots
-        let gap = ReceiptLayout.qrGapDots
-
-        let pairWidth = canvasSize * 2 + gap
-        let pairOriginX = (ReceiptLayout.qrImageWidthDots - pairWidth) / 2
-        guard pairOriginX >= 0 else {
+        let widthInModules = left.width + right.width + quietZoneModules * 3
+        let scale = ReceiptLayout.qrImageWidthDots / widthInModules
+        guard scale >= 1 else {
             throw ReceiptRasterError.imageTooLarge
         }
+        let contentWidth = widthInModules * scale
+        let imageHeight = (max(left.height, right.height) + quietZoneModules * 2) * scale
+        let pairOriginX = (ReceiptLayout.qrImageWidthDots - contentWidth) / 2
+        let symbolOriginY = quietZoneModules * scale
+        let leftOriginX = pairOriginX + quietZoneModules * scale
+        let rightOriginX = leftOriginX + left.width * scale + quietZoneModules * scale
 
-        var output = ESCPosRasterImage(width: ReceiptLayout.qrImageWidthDots, height: canvasSize)
-        // 左右 QR 的資料長度通常不同，導致 QR 版本（模組數）不同。
-        // 若使用相同 scale，較小版本的 QR 會被縮得很小。
-        // 因此分別計算 scale，讓兩個 QR 都盡量填滿各自的 canvas，視覺大小才會一致。
-        let leftScale = scaleFor(matrix: left, canvasSize: canvasSize)
-        let rightScale = scaleFor(matrix: right, canvasSize: canvasSize)
-        guard leftScale >= 1, rightScale >= 1 else {
-            throw ReceiptRasterError.imageTooLarge
-        }
-        drawQRMatrix(left, in: &output, canvasX: pairOriginX, canvasSize: canvasSize, scale: leftScale)
-        drawQRMatrix(right, in: &output, canvasX: pairOriginX + canvasSize + gap, canvasSize: canvasSize, scale: rightScale)
+        var output = ESCPosRasterImage(width: ReceiptLayout.qrImageWidthDots, height: imageHeight)
+        drawQRMatrix(left, in: &output, originX: leftOriginX, originY: symbolOriginY, scale: scale)
+        drawQRMatrix(right, in: &output, originX: rightOriginX, originY: symbolOriginY, scale: scale)
         return output
-    }
-
-    private static func scaleFor(matrix: MonochromeMatrix, canvasSize: Int) -> Int {
-        let requiredModules = matrix.width + quietZoneModules * 2
-        return canvasSize / requiredModules
     }
 
     static func code128(payload: String) throws -> ESCPosRasterImage {
@@ -223,22 +213,15 @@ enum ReceiptRasterizer {
     private static func drawQRMatrix(
         _ matrix: MonochromeMatrix,
         in output: inout ESCPosRasterImage,
-        canvasX: Int,
-        canvasSize: Int,
+        originX: Int,
+        originY: Int,
         scale: Int
     ) {
-        let symbolSize = (matrix.width + quietZoneModules * 2) * scale
-        // QR 符號（含 quiet zone）應該置中於 canvas 內。
-        // 以前多加一次 quietZone*scale 會把圖案推出 canvas 底部/右側，
-        // 導致 finder pattern 被截斷而印不出 / 掃不到。
-        let symbolX = canvasX + (canvasSize - symbolSize) / 2
-        let symbolY = (canvasSize - symbolSize) / 2
-
         for y in 0..<matrix.height {
             for x in 0..<matrix.width where matrix.isBlack(x: x, y: y) {
                 output.fillBlack(
-                    x: symbolX + x * scale,
-                    y: symbolY + y * scale,
+                    x: originX + x * scale,
+                    y: originY + y * scale,
                     width: scale,
                     height: scale
                 )

@@ -4,10 +4,8 @@ enum ReceiptLayout {
     static let paperTitle = "58mm"
     static let textColumns = 32
     static let printableDots = 384
-    static let qrImageWidthDots = 360
-    static let qrCanvasDots = 180
-    static let qrGapDots = 0
-    static let qrLeftMarginDots = 12
+    static let qrImageWidthDots = 376
+    static let qrLeftMarginDots = 4
     static let barcodeHeightDots = 88
 }
 

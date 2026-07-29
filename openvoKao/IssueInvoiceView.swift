@@ -62,7 +62,12 @@ struct IssueInvoiceView: View {
     }
 
     private var checkoutSummary: CheckoutSummary? {
-        CheckoutCalculator.summary(subtotal: subtotal, discount: discount, receivedAmount: receivedAmount)
+        CheckoutCalculator.summary(
+            subtotal: subtotal,
+            discount: discount,
+            receivedAmount: receivedAmount,
+            defaultToExactPayment: receivedAmountText.isEmpty
+        )
     }
 
     private var checkoutError: String? {
@@ -128,14 +133,8 @@ struct IssueInvoiceView: View {
                         }
 
                         Section("收款") {
-                            TextField("實收金額", text: $receivedAmountText)
+                            TextField("實收金額（留空即不找零）", text: $receivedAmountText)
                                 .keyboardType(.numberPad)
-                            Button("不找零") {
-                                if let summary = checkoutSummary {
-                                    receivedAmountText = String(summary.total)
-                                }
-                            }
-                            .disabled(checkoutSummary == nil)
                             CheckoutSummaryRows(summary: checkoutSummary, hasDiscount: discountType != nil)
                         }
                     }
