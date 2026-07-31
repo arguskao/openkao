@@ -1139,6 +1139,7 @@ test("Worker integration: invoice management query, reprint, void, audit, and te
 
   const originalFetch = globalThis.fetch;
   const endpoints: string[] = [];
+  let remoteVoided = false;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     endpoints.push(url);
@@ -1150,6 +1151,18 @@ test("Worker integration: invoice management query, reprint, void, audit, and te
     }
     if (url.endsWith("/invoice_query")) {
       assert.deepEqual(data, { type: "invoice", invoice_number: "KL12345678" });
+      return Response.json({
+        code: 0,
+        invoice_number: "KL12345678",
+        invoice_type: "C0401",
+        invoice_date: "20260712",
+        invoice_time: "16:20:00",
+        random_number: "3456",
+        barcode: "11508KL123456783456",
+        qrcode_left: "MANAGE-LEFT",
+        qrcode_right: "**MANAGE-RIGHT",
+        ...(remoteVoided ? { wait: [{ invoice_type: "C0501" }] } : {})
+      });
     }
     return Response.json({
       code: 0,
@@ -1212,6 +1225,15 @@ test("Worker integration: invoice management query, reprint, void, audit, and te
     assert.equal(reprintPayload.invoiceFormatCode, undefined);
     assert.equal(reprintPayload.isReprint, true);
 
+    remoteVoided = true;
+    const blockedReprint = await api(
+      env,
+      `/api/invoices/${created.invoiceId}/reprint`,
+      { method: "POST", authToken: tenant.authToken, body: {} }
+    );
+    assert.equal(blockedReprint.status, 409);
+    assert.equal((await blockedReprint.json() as { code: string }).code, "invoice_voided");
+
     await apiJson(
       env,
       `/api/invoices/${created.invoiceId}/void`,
@@ -1237,7 +1259,7 @@ test("Worker integration: invoice management query, reprint, void, audit, and te
     assert.equal(actions.results.some((row) => row.action === "invoice.query.completed"), true);
     assert.equal(actions.results.some((row) => row.action === "invoice.reprint.created"), true);
     assert.equal(actions.results.some((row) => row.action === "invoice.void.completed"), true);
-    assert.equal(endpoints.filter((url) => url.endsWith("/invoice_query")).length, 1);
+    assert.equal(endpoints.filter((url) => url.endsWith("/invoice_query")).length, 3);
     assert.equal(endpoints.filter((url) => url.endsWith("/f0501")).length, 1);
   } finally {
     globalThis.fetch = originalFetch;

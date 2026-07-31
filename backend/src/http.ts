@@ -101,6 +101,7 @@ function localizedMessageForCode(code: string): string {
     account_invalid: "帳號只能使用英文字母、數字、底線或減號。",
     amego_app_key_not_configured: "尚未設定光貿 App Key。",
     amego_invoice_rejected: "光貿拒絕開立發票，請檢查發票資料。",
+    amego_invoice_not_reprintable: "光貿回應的發票狀態不可補印。",
     amego_payload_incomplete: "光貿已回應，但缺少正式條碼或 QRCode 資料。",
     amego_result_unknown: "光貿開票結果尚未確認，系統不會重複開票，請稍後再試。",
     admin_token_not_configured: "後台 Token 尚未設定。",

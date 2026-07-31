@@ -177,6 +177,14 @@ export async function reprintInvoice(
   const row = await fetchInvoice(env, session.company_id, id);
   if (!row) throw new HttpError(404, "invoice_not_found");
   if (row.status === "voided") throw new HttpError(409, "invoice_voided");
+  const { invoiceAccount, appKey } = await amegoSettings(env, session.company_id);
+  const remote = await queryAmegoInvoiceByNumber({
+    invoice: invoiceAccount,
+    appKey,
+    invoiceNumber: row.invoice_number,
+    apiBaseUrl: env.AMEGO_API_BASE_URL
+  });
+  requireReprintableAmegoInvoice(remote, row.invoice_number);
   if (!row.barcode_payload || !row.qrcode_left || !row.qrcode_right) {
     throw new HttpError(409, "invoice_payload_incomplete");
   }
@@ -348,6 +356,38 @@ function requireSuccessfulQuery(result: AmegoInvoiceResult, invoiceNumber: strin
   if (result.invoiceNumber && result.invoiceNumber !== invoiceNumber) {
     throw new HttpError(409, "amego_invoice_number_mismatch");
   }
+}
+
+function requireReprintableAmegoInvoice(result: AmegoInvoiceResult, invoiceNumber: string): void {
+  requireSuccessfulQuery(result, invoiceNumber);
+
+  const data = isRecord(result.raw.data) ? result.raw.data : result.raw;
+  const invoiceType = stringValue(data.invoice_type);
+  const cancelDate = data.cancel_date;
+  const waitingActions = Array.isArray(data.wait) ? data.wait : [];
+  const hasVoidAction = waitingActions.some((action) => (
+    isRecord(action) && stringValue(action.invoice_type) === "C0501"
+  ));
+
+  if (invoiceType === "C0501" || hasVoidAction || isNonZeroValue(cancelDate)) {
+    throw new HttpError(409, "invoice_voided");
+  }
+  if (invoiceType !== "C0401") {
+    throw new HttpError(409, "amego_invoice_not_reprintable");
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" || typeof value === "number" ? String(value) : null;
+}
+
+function isNonZeroValue(value: unknown): boolean {
+  if (value == null || value === "") return false;
+  return String(value) !== "0";
 }
 
 async function resolveDeviceId(env: Env, companyId: number, preferred: string | null): Promise<string | null> {
