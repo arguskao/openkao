@@ -1019,6 +1019,7 @@ test("Worker integration: Amego request validates destination and calculates B2B
     );
     assert.ok(businessInvoice.printJobId);
     assert.equal(postedData[0].BuyerIdentifier, "12345678");
+    assert.equal(postedData[0].BuyerName, "12345678");
     assert.equal(postedData[0].SalesAmount, "100");
     assert.equal(postedData[0].TaxAmount, "5");
     const businessJob = await env.DB.prepare(

@@ -224,8 +224,9 @@ function normalizeIssueInput(body: Record<string, unknown>, request: Request): N
   validateWholeOrderDiscount(items, checkout);
 
   const buyerIdentifier = normalizeOptionalCompanyIdentifier(body.buyerIdentifier, "buyerIdentifier");
-  const buyerName = normalizeOptionalBoundedString(body.buyerName, 100)
-    ?? (buyerIdentifier ?? "客人");
+  const buyerName = buyerIdentifier
+    ?? normalizeOptionalBoundedString(body.buyerName, 100)
+    ?? "消費者";
   const carrierType = normalizeOptionalBoundedString(body.carrierType, 20) ?? "";
   const carrierId = normalizeOptionalBoundedString(body.carrierId, 64) ?? "";
   const npoban = normalizeOptionalBoundedString(body.npoban, 20) ?? "";
