@@ -59,6 +59,7 @@ import type {
   UserSession
 } from "./domain-types";
 import { buildErrorResponse, buildInternalErrorResponse, html, HttpError, json } from "./http";
+import { syncPendingAmegoPrintJobs } from "./amego-print-sync";
 import { createAmegoInvoice } from "./invoice-issuance";
 import {
   getInvoice,
@@ -99,6 +100,7 @@ export type { Env } from "./types";
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await syncPendingAmegoPrintJobs(env, writeSystemAuditLog);
     await checkPrintJobQueueHealth(env);
   },
 

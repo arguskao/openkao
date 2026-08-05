@@ -50,6 +50,20 @@ export type AmegoInvoiceResult = {
   raw: Record<string, unknown>;
 };
 
+export type AmegoInvoiceStatusResult = {
+  code: string;
+  message: string | null;
+  invoiceNumber: string | null;
+  invoiceType: string | null;
+  invoiceStatus: number | null;
+  printMark: string | null;
+  cancelDate: string | null;
+  waitingInvoiceTypes: string[];
+  raw: Record<string, unknown>;
+};
+
+export type AmegoInvoicePrintType = 1 | 2;
+
 export class AmegoTransportError extends Error {
   constructor(
     readonly code: "amego_timeout" | "amego_http_error" | "amego_invalid_response",
@@ -117,6 +131,55 @@ export async function queryAmegoInvoiceByNumber(input: {
     invoice: input.invoice,
     appKey: input.appKey,
     data: { type: "invoice", invoice_number: input.invoiceNumber },
+    apiBaseUrl: input.apiBaseUrl,
+    timeoutMs: input.timeoutMs,
+    fetcher: input.fetcher
+  });
+}
+
+export async function queryAmegoInvoiceStatus(input: {
+  invoice: string;
+  appKey: string;
+  invoiceNumber: string;
+  apiBaseUrl?: string;
+  timeoutMs?: number;
+  fetcher?: typeof fetch;
+}): Promise<AmegoInvoiceStatusResult> {
+  const result = await postAmego({
+    endpoint: "invoice_status",
+    invoice: input.invoice,
+    appKey: input.appKey,
+    data: [{ InvoiceNumber: input.invoiceNumber }],
+    apiBaseUrl: input.apiBaseUrl,
+    timeoutMs: input.timeoutMs,
+    fetcher: input.fetcher
+  });
+  return normalizeAmegoInvoiceStatus(result.raw, input.invoiceNumber);
+}
+
+export async function requestAmegoInvoicePrint(input: {
+  invoice: string;
+  appKey: string;
+  invoiceNumber: string;
+  printerType: number;
+  printerLang: number;
+  printInvoiceType: AmegoInvoicePrintType;
+  apiBaseUrl?: string;
+  timeoutMs?: number;
+  fetcher?: typeof fetch;
+}): Promise<AmegoInvoiceResult> {
+  return postAmego({
+    endpoint: "invoice_print",
+    invoice: input.invoice,
+    appKey: input.appKey,
+    data: {
+      type: "invoice",
+      invoice_number: input.invoiceNumber,
+      printer_type: input.printerType,
+      printer_lang: input.printerLang,
+      print_invoice_type: input.printInvoiceType,
+      print_invoice_detail: 0
+    },
     apiBaseUrl: input.apiBaseUrl,
     timeoutMs: input.timeoutMs,
     fetcher: input.fetcher
@@ -221,6 +284,36 @@ function normalizeAmegoResult(raw: Record<string, unknown>): AmegoInvoiceResult 
   };
 }
 
+function normalizeAmegoInvoiceStatus(
+  raw: Record<string, unknown>,
+  requestedInvoiceNumber: string
+): AmegoInvoiceStatusResult {
+  const candidates = Array.isArray(raw.data)
+    ? raw.data.filter(isRecord)
+    : isRecord(raw.data)
+      ? [raw.data]
+      : [raw];
+  const data = candidates.find((candidate) => (
+    stringValue(candidate.invoice_number) === requestedInvoiceNumber
+  )) ?? candidates[0] ?? raw;
+  const waitingActions = Array.isArray(data.wait) ? data.wait.filter(isRecord) : [];
+  const nestedCode = data === raw ? null : data.code;
+
+  return {
+    code: String(raw.code ?? nestedCode ?? ""),
+    message: stringValue(raw.msg ?? raw.message ?? data.msg ?? data.message),
+    invoiceNumber: stringValue(data.invoice_number),
+    invoiceType: stringValue(data.invoice_type ?? data.type),
+    invoiceStatus: numberValue(data.invoice_status ?? data.status),
+    printMark: stringValue(data.print_mark),
+    cancelDate: stringValue(data.cancel_date),
+    waitingInvoiceTypes: waitingActions
+      .map((action) => stringValue(action.invoice_type ?? action.type))
+      .filter((value): value is string => value != null),
+    raw
+  };
+}
+
 function normalizeBaseUrl(value: string | undefined): string {
   return (value?.trim() || DEFAULT_AMEGO_API_BASE_URL).replace(/\/+$/, "");
 }
@@ -238,6 +331,17 @@ function stringOrNumberValue(value: unknown): string | number | null {
     return value;
   }
   return stringValue(value);
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function sanitizeRecord(value: Record<string, unknown>): Record<string, unknown> {

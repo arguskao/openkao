@@ -1,4 +1,5 @@
 import { leaseExpiryTimestamp } from "./auth";
+import { syncAmegoPrintJob } from "./amego-print-sync";
 import { MAX_INVOICE_ITEMS, MAX_ITEM_QUANTITY, MAX_MONEY_AMOUNT } from "./constants";
 import { sha256Hex } from "./crypto-utils";
 import type { DeviceSession, PrintJobPayload, PrintJobRow } from "./domain-types";
@@ -53,6 +54,13 @@ export async function checkPrintJobQueueHealth(env: Env): Promise<void> {
   )
     .all<{ company_id: number; value: number }>();
 
+  const amegoManualReview = await env.DB.prepare(
+    `SELECT company_id, COUNT(*) AS value
+     FROM print_jobs
+     WHERE amego_print_sync_status = 'manual_review'
+     GROUP BY company_id`
+  ).all<{ company_id: number; value: number }>();
+
   for (const row of stalePending.results) {
     console.warn(JSON.stringify({
       event: "print_job.pending_stale",
@@ -65,6 +73,14 @@ export async function checkPrintJobQueueHealth(env: Env): Promise<void> {
   for (const row of expiredPrinting.results) {
     console.warn(JSON.stringify({
       event: "print_job.printing_lease_expired",
+      companyId: row.company_id,
+      count: row.value
+    }));
+  }
+
+  for (const row of amegoManualReview.results) {
+    console.warn(JSON.stringify({
+      event: "amego.print_sync.manual_review_pending",
       companyId: row.company_id,
       count: row.value
     }));
@@ -193,13 +209,21 @@ export async function updatePrintJobStatus(
   const printedAt = status === "printed" ? new Date().toISOString() : null;
 
   const row = await env.DB.prepare(
-    `SELECT status, claimed_by, lease_expires_at
-     FROM print_jobs
-     WHERE id = ?
-       AND company_id = ?`
+    `SELECT pj.status, pj.claimed_by, pj.lease_expires_at,
+            pj.amego_print_sync_status, i.amego_order_id
+     FROM print_jobs pj
+     LEFT JOIN invoices i ON i.id = pj.invoice_id AND i.company_id = pj.company_id
+     WHERE pj.id = ?
+       AND pj.company_id = ?`
   )
     .bind(id, device.company_id)
-    .first<{ status: string; claimed_by: string | null; lease_expires_at: string | null }>();
+    .first<{
+      status: string;
+      claimed_by: string | null;
+      lease_expires_at: string | null;
+      amego_print_sync_status: string;
+      amego_order_id: string | null;
+    }>();
 
   if (!row) {
     throw new HttpError(404, "print_job_not_found");
@@ -210,7 +234,10 @@ export async function updatePrintJobStatus(
   }
 
   if (row.status === status) {
-    return json({ ok: true, idempotent: true });
+    const amegoPrintSyncStatus = status === "printed"
+      ? await syncAmegoPrintJob(env, id, writeSystemAuditLog, device.id)
+      : row.amego_print_sync_status;
+    return json({ ok: true, idempotent: true, amegoPrintSyncStatus });
   }
 
   if (row.status === "printed" || row.status === "failed") {
@@ -225,12 +252,20 @@ export async function updatePrintJobStatus(
     throw new HttpError(409, "print_job_claim_expired");
   }
 
+  const initialAmegoSyncStatus = status === "printed" && row.amego_order_id
+    ? "pending"
+    : "not_required";
   const result = await env.DB.prepare(
     `UPDATE print_jobs
      SET
        status = ?,
        last_error = ?,
        printed_at = COALESCE(?, printed_at),
+       amego_print_sync_status = CASE WHEN ? = 'pending' THEN 'pending' ELSE amego_print_sync_status END,
+       amego_print_attempt_count = CASE WHEN ? = 'pending' THEN 0 ELSE amego_print_attempt_count END,
+       amego_print_last_error = CASE WHEN ? = 'pending' THEN NULL ELSE amego_print_last_error END,
+       amego_print_next_retry_at = CASE WHEN ? = 'pending' THEN CURRENT_TIMESTAMP ELSE amego_print_next_retry_at END,
+       amego_print_synced_at = CASE WHEN ? = 'pending' THEN NULL ELSE amego_print_synced_at END,
        lease_expires_at = NULL,
        updated_at = CURRENT_TIMESTAMP
      WHERE id = ?
@@ -238,10 +273,37 @@ export async function updatePrintJobStatus(
        AND status = 'printing'
        AND claimed_by = ?`
   )
-    .bind(status, status === "failed" ? message : null, printedAt, id, device.company_id, device.id)
+    .bind(
+      status,
+      status === "failed" ? message : null,
+      printedAt,
+      initialAmegoSyncStatus,
+      initialAmegoSyncStatus,
+      initialAmegoSyncStatus,
+      initialAmegoSyncStatus,
+      initialAmegoSyncStatus,
+      id,
+      device.company_id,
+      device.id
+    )
     .run();
 
   if (result.meta.changes === 0) {
+    const concurrent = await env.DB.prepare(
+      `SELECT status, claimed_by, amego_print_sync_status
+       FROM print_jobs
+       WHERE id = ? AND company_id = ?`
+    ).bind(id, device.company_id).first<{
+      status: string;
+      claimed_by: string | null;
+      amego_print_sync_status: string;
+    }>();
+    if (concurrent?.status === status && concurrent.claimed_by === device.id) {
+      const amegoPrintSyncStatus = status === "printed"
+        ? await syncAmegoPrintJob(env, id, writeSystemAuditLog, device.id)
+        : concurrent.amego_print_sync_status;
+      return json({ ok: true, idempotent: true, amegoPrintSyncStatus });
+    }
     throw new HttpError(409, "print_job_update_conflict");
   }
 
@@ -265,13 +327,18 @@ export async function updatePrintJobStatus(
     }
   });
 
-  return json({ ok: true });
+  const amegoPrintSyncStatus = status === "printed"
+    ? await syncAmegoPrintJob(env, id, writeSystemAuditLog, device.id)
+    : "not_required";
+  return json({ ok: true, amegoPrintSyncStatus });
 }
 
 export async function adminListPrintJobs(env: Env): Promise<Response> {
   const result = await env.DB.prepare(
     `SELECT id, company_id, device_id, status, payload_json, last_error, printed_at, created_at,
-            claimed_by, claimed_at, lease_expires_at, attempt_count
+            claimed_by, claimed_at, lease_expires_at, attempt_count,
+            amego_print_sync_status, amego_print_attempt_count,
+            amego_print_last_error, amego_print_next_retry_at, amego_print_synced_at
      FROM print_jobs
      ORDER BY created_at DESC
      LIMIT 100`
@@ -289,6 +356,11 @@ export async function adminListPrintJobs(env: Env): Promise<Response> {
       claimed_at: string | null;
       lease_expires_at: string | null;
       attempt_count: number | null;
+      amego_print_sync_status: string;
+      amego_print_attempt_count: number;
+      amego_print_last_error: string | null;
+      amego_print_next_retry_at: string | null;
+      amego_print_synced_at: string | null;
     }>();
 
   return json({
@@ -304,7 +376,12 @@ export async function adminListPrintJobs(env: Env): Promise<Response> {
       claimedBy: row.claimed_by,
       claimedAt: row.claimed_at,
       leaseExpiresAt: row.lease_expires_at,
-      attemptCount: row.attempt_count ?? 0
+      attemptCount: row.attempt_count ?? 0,
+      amegoPrintSyncStatus: row.amego_print_sync_status,
+      amegoPrintAttemptCount: row.amego_print_attempt_count,
+      amegoPrintLastError: row.amego_print_last_error,
+      amegoPrintNextRetryAt: row.amego_print_next_retry_at,
+      amegoPrintSyncedAt: row.amego_print_synced_at
     }))
   });
 }

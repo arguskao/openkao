@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import type { Database } from "sql.js";
-import { applyMigrations, createSqlD1 } from "./helpers/sql-d1";
+import { applyMigrations, createSqlD1, migrationFiles } from "./helpers/sql-d1";
 
 test("D1 migrations apply to an empty database", async () => {
   const d1 = await createSqlD1();
@@ -23,6 +23,11 @@ test("D1 migrations apply to an empty database", async () => {
   assert.equal(columnExists(d1.rawDatabase, "companies", "amego_printer_lang"), true);
   assert.equal(columnExists(d1.rawDatabase, "companies", "max_bound_devices"), true);
   assert.equal(columnExists(d1.rawDatabase, "users", "is_active"), true);
+  assert.equal(columnExists(d1.rawDatabase, "print_jobs", "amego_print_sync_status"), true);
+  assert.equal(columnExists(d1.rawDatabase, "print_jobs", "amego_print_attempt_count"), true);
+  assert.equal(columnExists(d1.rawDatabase, "print_jobs", "amego_print_last_error"), true);
+  assert.equal(columnExists(d1.rawDatabase, "print_jobs", "amego_print_next_retry_at"), true);
+  assert.equal(columnExists(d1.rawDatabase, "print_jobs", "amego_print_synced_at"), true);
   assert.equal(foreignKeyIssueCount(d1.rawDatabase), 0);
   assert.equal(rowCount(d1.rawDatabase, "companies"), 0);
   assert.equal(rowCount(d1.rawDatabase, "print_jobs"), 0);
@@ -69,15 +74,21 @@ test("D1 old schema upgrade keeps row counts, foreign keys, and key queries vali
   );
   assert.deepEqual(product, { company_id: 1, category_id: 1, price_decimal_places: 0 });
 
-  const printJob = firstRow<{ status: string; invoice_number: string; device_name: string }>(
+  const printJob = firstRow<{
+    status: string;
+    invoice_number: string;
+    device_name: string;
+    amego_print_sync_status: string;
+  }>(
     db,
-    `SELECT p.status, i.invoice_number, d.name AS device_name
+    `SELECT p.status, p.amego_print_sync_status, i.invoice_number, d.name AS device_name
      FROM print_jobs p
      JOIN invoices i ON i.id = p.invoice_id
      JOIN devices d ON d.id = p.device_id`
   );
   assert.deepEqual(printJob, {
     status: "pending",
+    amego_print_sync_status: "not_required",
     invoice_number: "AB12345678",
     device_name: "Front iPhone"
   });
@@ -200,6 +211,79 @@ test("D1 integrity guards reject invalid business data", async () => {
     `),
     /print_jobs_payload_json_invalid/
   );
+
+  assert.throws(
+    () => db.run(`
+      INSERT INTO print_jobs (
+        id, company_id, invoice_id, status, payload_json,
+        amego_print_sync_status, amego_print_attempt_count
+      )
+      VALUES (
+        'job-invalid-amego-sync', 1, 'invoice-guard', 'pending',
+        '{"invoiceNumber":"AB12345678"}', 'unknown', 0
+      )
+    `),
+    /print_jobs_amego_sync_integrity_check_failed/
+  );
+});
+
+test("D1 Amego print sync migration backfills only the earliest printed original", async () => {
+  const d1 = await createSqlD1();
+  const db = d1.rawDatabase;
+  const migrations = migrationFiles();
+  for (const migration of migrations.slice(0, -1)) {
+    db.exec(fs.readFileSync(migration, "utf8"));
+  }
+  db.run(`
+    INSERT INTO companies (id, name, tax_id, amego_app_key)
+    VALUES (1, 'Backfill Company', '12345678', 'test-app-key');
+
+    INSERT INTO invoices (
+      id, company_id, invoice_number, random_number, issued_at,
+      seller_identifier, total_amount, amego_order_id, status,
+      barcode_payload, qrcode_left, qrcode_right
+    )
+    VALUES (
+      'invoice-backfill', 1, 'AB12345678', '1234', '2026-07-09T13:59:00Z',
+      '12345678', 45, 'ORDER-BACKFILL', 'issued',
+      'BARCODE', 'LEFT', 'RIGHT'
+    );
+
+    INSERT INTO invoice_items (id, invoice_id, name, quantity, unit_price, amount)
+    VALUES ('item-backfill', 'invoice-backfill', '奶茶', 1, 45, 45);
+
+    INSERT INTO print_jobs (
+      id, company_id, invoice_id, status, payload_json, printed_at, created_at
+    )
+    VALUES
+      (
+        'job-original-first', 1, 'invoice-backfill', 'printed',
+        '{"invoiceNumber":"AB12345678","barcodePayload":"BARCODE","leftQRCodePayload":"LEFT","rightQRCodePayload":"RIGHT"}',
+        '2026-07-09 10:00:00', '2026-07-09 10:00:00'
+      ),
+      (
+        'job-original-second', 1, 'invoice-backfill', 'printed',
+        '{"invoiceNumber":"AB12345678","barcodePayload":"BARCODE","leftQRCodePayload":"LEFT","rightQRCodePayload":"RIGHT"}',
+        '2026-07-09 10:01:00', '2026-07-09 10:01:00'
+      ),
+      (
+        'job-reprint', 1, 'invoice-backfill', 'printed',
+        '{"invoiceNumber":"AB12345678","isReprint":true,"barcodePayload":"BARCODE","leftQRCodePayload":"LEFT","rightQRCodePayload":"RIGHT"}',
+        '2026-07-09 10:02:00', '2026-07-09 10:02:00'
+      );
+  `);
+
+  db.exec(fs.readFileSync(migrations.at(-1)!, "utf8"));
+
+  const rows = allRows<{ id: string; amego_print_sync_status: string }>(
+    db,
+    "SELECT id, amego_print_sync_status FROM print_jobs ORDER BY created_at ASC"
+  );
+  assert.deepEqual(rows, [
+    { id: "job-original-first", amego_print_sync_status: "pending" },
+    { id: "job-original-second", amego_print_sync_status: "not_required" },
+    { id: "job-reprint", amego_print_sync_status: "not_required" }
+  ]);
 });
 
 function applyOnlyInitialMigration(db: Database): void {
@@ -292,6 +376,14 @@ function firstRow<T>(db: Database, sql: string): T {
   const columns = result[0]?.columns ?? [];
   const values = result[0]?.values[0] ?? [];
   return Object.fromEntries(columns.map((column, index) => [column, values[index]])) as T;
+}
+
+function allRows<T>(db: Database, sql: string): T[] {
+  const result = db.exec(sql);
+  const columns = result[0]?.columns ?? [];
+  return (result[0]?.values ?? []).map((values) => (
+    Object.fromEntries(columns.map((column, index) => [column, values[index]])) as T
+  ));
 }
 
 function scalar<T>(db: Database, sql: string, params: unknown[] = []): T {

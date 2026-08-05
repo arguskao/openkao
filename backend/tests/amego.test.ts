@@ -6,6 +6,8 @@ import {
   AmegoTransportError,
   createAmegoSignature,
   issueAmegoInvoice,
+  queryAmegoInvoiceStatus,
+  requestAmegoInvoicePrint,
   sanitizeAmegoResponse,
   type AmegoInvoiceRequest
 } from "../src/amego";
@@ -93,6 +95,102 @@ test("Amego client distinguishes HTTP errors, timeouts, and incomplete responses
   assert.equal(incomplete.barcode, null);
   assert.equal(incomplete.qrcodeLeft, null);
   assert.equal(incomplete.qrcodeRight, null);
+});
+
+test("Amego invoice status posts an array and normalizes documented field variants", async () => {
+  let postedUrl = "";
+  let postedData: unknown;
+  let postedTime = "";
+  let postedSign = "";
+  const result = await queryAmegoInvoiceStatus({
+    invoice: "12345678",
+    appKey: "test-app-key",
+    invoiceNumber: "AB12345678",
+    apiBaseUrl: "https://amego.test/json",
+    fetcher: async (input, init) => {
+      postedUrl = String(input);
+      const form = new URLSearchParams(String(init?.body));
+      postedData = JSON.parse(form.get("data") ?? "null") as unknown;
+      postedTime = form.get("time") ?? "";
+      postedSign = form.get("sign") ?? "";
+      return Response.json({
+        code: 0,
+        data: [{
+          invoice_number: "AB12345678",
+          type: "C0401",
+          status: "31",
+          print_mark: "N",
+          cancel_date: 0,
+          wait: [{ type: "C0501" }]
+        }]
+      });
+    }
+  });
+
+  assert.equal(postedUrl, "https://amego.test/json/invoice_status");
+  assert.deepEqual(postedData, [{ InvoiceNumber: "AB12345678" }]);
+  assert.match(postedTime, /^\d{10}$/);
+  assert.equal(
+    postedSign,
+    createAmegoSignature(JSON.stringify(postedData), postedTime, "test-app-key")
+  );
+  assert.equal(result.invoiceNumber, "AB12345678");
+  assert.equal(result.invoiceType, "C0401");
+  assert.equal(result.invoiceStatus, 31);
+  assert.equal(result.printMark, "N");
+  assert.equal(result.cancelDate, "0");
+  assert.deepEqual(result.waitingInvoiceTypes, ["C0501"]);
+
+  const objectResult = await queryAmegoInvoiceStatus({
+    invoice: "12345678",
+    appKey: "test-app-key",
+    invoiceNumber: "AB12345678",
+    fetcher: async () => Response.json({
+      code: "0",
+      data: {
+        invoice_number: "AB12345678",
+        invoice_type: "C0401",
+        invoice_status: 99,
+        print_mark: "Y"
+      }
+    })
+  });
+  assert.equal(objectResult.invoiceType, "C0401");
+  assert.equal(objectResult.invoiceStatus, 99);
+  assert.equal(objectResult.printMark, "Y");
+});
+
+test("Amego invoice print requests original and reprint formats without exposing printer bytes", async () => {
+  const posted: Array<Record<string, unknown>> = [];
+  const fetcher: typeof fetch = async (_input, init) => {
+    const form = new URLSearchParams(String(init?.body));
+    posted.push(JSON.parse(form.get("data") ?? "{}") as Record<string, unknown>);
+    return Response.json({ code: 0, data: { base64_data: "must-not-be-stored" } });
+  };
+
+  const original = await requestAmegoInvoicePrint({
+    invoice: "12345678",
+    appKey: "test-app-key",
+    invoiceNumber: "AB12345678",
+    printerType: 2,
+    printerLang: 2,
+    printInvoiceType: 1,
+    fetcher
+  });
+  await requestAmegoInvoicePrint({
+    invoice: "12345678",
+    appKey: "test-app-key",
+    invoiceNumber: "AB12345678",
+    printerType: 2,
+    printerLang: 2,
+    printInvoiceType: 2,
+    fetcher
+  });
+
+  assert.deepEqual(posted.map((item) => item.print_invoice_type), [1, 2]);
+  assert.equal(posted[0].print_invoice_detail, 0);
+  assert.equal(original.code, "0");
+  assert.equal(JSON.stringify(sanitizeAmegoResponse(original.raw)).includes("must-not-be-stored"), false);
 });
 
 test("Amego response storage removes printer bytes and secrets recursively", () => {

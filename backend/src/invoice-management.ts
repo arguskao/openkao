@@ -1,9 +1,15 @@
 import {
+  AmegoTransportError,
   queryAmegoInvoiceByNumber,
+  queryAmegoInvoiceStatus,
   sanitizeAmegoResponse,
   voidAmegoInvoice,
   type AmegoInvoiceResult
 } from "./amego";
+import {
+  amegoInvoiceStatusAuditDetails,
+  requireAmegoInvoiceIssued
+} from "./amego-invoice-state";
 import { requireOwnerAccess } from "./auth";
 import type { PrintJobPayload, UserSession } from "./domain-types";
 import { HttpError, json } from "./http";
@@ -131,7 +137,7 @@ export async function refreshInvoice(
   requireInvoiceManager(session);
   const row = await fetchInvoice(env, session.company_id, id);
   if (!row) throw new HttpError(404, "invoice_not_found");
-  const { company, invoiceAccount, appKey } = await amegoSettings(env, session.company_id);
+  const { invoiceAccount, appKey } = await amegoSettings(env, session.company_id);
   const result = await queryAmegoInvoiceByNumber({
     invoice: invoiceAccount,
     appKey,
@@ -174,17 +180,14 @@ export async function reprintInvoice(
   writeAuditLog: AuditWriter
 ): Promise<Response> {
   requireInvoiceManager(session);
-  const row = await fetchInvoice(env, session.company_id, id);
+  let row = await fetchInvoice(env, session.company_id, id);
   if (!row) throw new HttpError(404, "invoice_not_found");
   if (row.status === "voided") throw new HttpError(409, "invoice_voided");
-  const { invoiceAccount, appKey } = await amegoSettings(env, session.company_id);
-  const remote = await queryAmegoInvoiceByNumber({
-    invoice: invoiceAccount,
-    appKey,
-    invoiceNumber: row.invoice_number,
-    apiBaseUrl: env.AMEGO_API_BASE_URL
-  });
-  requireReprintableAmegoInvoice(remote, row.invoice_number);
+  const settings = await amegoSettings(env, session.company_id);
+  await verifyAmegoInvoiceIssued(env, session, row, settings, "reprint", writeAuditLog);
+  if (!row.barcode_payload || !row.qrcode_left || !row.qrcode_right) {
+    row = await repairInvoicePrintPayload(env, session, row, settings, writeAuditLog);
+  }
   if (!row.barcode_payload || !row.qrcode_left || !row.qrcode_right) {
     throw new HttpError(409, "invoice_payload_incomplete");
   }
@@ -243,10 +246,11 @@ export async function voidInvoice(
   const row = await fetchInvoice(env, session.company_id, id);
   if (!row) throw new HttpError(404, "invoice_not_found");
   if (row.status === "voided") return json({ ok: true, idempotent: true });
-  const { invoiceAccount, appKey } = await amegoSettings(env, session.company_id);
+  const settings = await amegoSettings(env, session.company_id);
+  await verifyAmegoInvoiceIssued(env, session, row, settings, "void", writeAuditLog);
   const result = await voidAmegoInvoice({
-    invoice: invoiceAccount,
-    appKey,
+    invoice: settings.invoiceAccount,
+    appKey: settings.appKey,
     invoiceNumber: row.invoice_number,
     apiBaseUrl: env.AMEGO_API_BASE_URL
   });
@@ -358,36 +362,86 @@ function requireSuccessfulQuery(result: AmegoInvoiceResult, invoiceNumber: strin
   }
 }
 
-function requireReprintableAmegoInvoice(result: AmegoInvoiceResult, invoiceNumber: string): void {
-  requireSuccessfulQuery(result, invoiceNumber);
-
-  const data = isRecord(result.raw.data) ? result.raw.data : result.raw;
-  const invoiceType = stringValue(data.invoice_type);
-  const cancelDate = data.cancel_date;
-  const waitingActions = Array.isArray(data.wait) ? data.wait : [];
-  const hasVoidAction = waitingActions.some((action) => (
-    isRecord(action) && stringValue(action.invoice_type) === "C0501"
-  ));
-
-  if (invoiceType === "C0501" || hasVoidAction || isNonZeroValue(cancelDate)) {
-    throw new HttpError(409, "invoice_voided");
+async function verifyAmegoInvoiceIssued(
+  env: Env,
+  session: UserSession,
+  row: InvoiceRow,
+  settings: Awaited<ReturnType<typeof amegoSettings>>,
+  operation: "void" | "reprint",
+  writeAuditLog: AuditWriter
+): Promise<void> {
+  let result;
+  try {
+    result = await queryAmegoInvoiceStatus({
+      invoice: settings.invoiceAccount,
+      appKey: settings.appKey,
+      invoiceNumber: row.invoice_number,
+      apiBaseUrl: env.AMEGO_API_BASE_URL
+    });
+  } catch (error) {
+    if (!(error instanceof AmegoTransportError)) throw error;
+    await writeAuditLog(env, session, "invoice", row.id, "invoice.status.check_failed", {
+      operation,
+      invoiceNumber: row.invoice_number,
+      transportError: error.code,
+      upstreamStatus: error.status
+    });
+    throw new HttpError(502, "amego_invoice_status_unavailable");
   }
-  if (invoiceType !== "C0401") {
-    throw new HttpError(409, "amego_invoice_not_reprintable");
-  }
+
+  await writeAuditLog(
+    env,
+    session,
+    "invoice",
+    row.id,
+    "invoice.status.checked",
+    amegoInvoiceStatusAuditDetails(result, operation)
+  );
+  requireAmegoInvoiceIssued(result, row.invoice_number);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" || typeof value === "number" ? String(value) : null;
-}
-
-function isNonZeroValue(value: unknown): boolean {
-  if (value == null || value === "") return false;
-  return String(value) !== "0";
+async function repairInvoicePrintPayload(
+  env: Env,
+  session: UserSession,
+  row: InvoiceRow,
+  settings: Awaited<ReturnType<typeof amegoSettings>>,
+  writeAuditLog: AuditWriter
+): Promise<InvoiceRow> {
+  const result = await queryAmegoInvoiceByNumber({
+    invoice: settings.invoiceAccount,
+    appKey: settings.appKey,
+    invoiceNumber: row.invoice_number,
+    apiBaseUrl: env.AMEGO_API_BASE_URL
+  });
+  requireSuccessfulQuery(result, row.invoice_number);
+  await env.DB.prepare(
+    `UPDATE invoices
+     SET random_number = COALESCE(NULLIF(?, ''), random_number),
+         invoice_date = COALESCE(NULLIF(?, ''), invoice_date),
+         invoice_time = COALESCE(NULLIF(?, ''), invoice_time),
+         barcode_payload = COALESCE(NULLIF(?, ''), barcode_payload),
+         qrcode_left = COALESCE(NULLIF(?, ''), qrcode_left),
+         qrcode_right = COALESCE(NULLIF(?, ''), qrcode_right),
+         amego_response_json = ?, amego_error_code = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND company_id = ?`
+  ).bind(
+    result.randomNumber,
+    result.invoiceDate,
+    result.invoiceTime == null ? null : String(result.invoiceTime),
+    result.barcode,
+    result.qrcodeLeft,
+    result.qrcodeRight,
+    JSON.stringify(sanitizeAmegoResponse(result.raw)),
+    row.id,
+    session.company_id
+  ).run();
+  await writeAuditLog(env, session, "invoice", row.id, "invoice.query.completed", {
+    invoiceNumber: row.invoice_number,
+    reason: "reprint_payload_repair"
+  });
+  const repaired = await fetchInvoice(env, session.company_id, row.id);
+  if (!repaired) throw new HttpError(404, "invoice_not_found");
+  return repaired;
 }
 
 async function resolveDeviceId(env: Env, companyId: number, preferred: string | null): Promise<string | null> {
