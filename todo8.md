@@ -72,6 +72,7 @@ OpenKao 實體列印成功後，再呼叫此 API 取得一次光貿列印資料�
 - [x] 建立明確的狀態結果型別，至少正規化 `code`、`message`、`invoiceNumber`、`invoiceType`、`invoiceStatus`、`printMark`、`cancelDate` 與 `wait`。
 - [x] 驗證回傳發票號碼必須等於本機要求的號碼，避免串錯公司或錯誤回應被當成成功。
 - [x] 建立共用的 `requireAmegoInvoiceIssuedFor(operation)` 判斷，作廢與補印不得各自寫一套不同規則。
+- [x] 2026-08-05 實測確認：作廢排程等待中，`invoice_status` 仍可能只回 `C0401` 且沒有 `wait`，但只讀的 `invoice_query.data.wait` 會出現 `C0501`。因此作廢與補印都必須依序通過 `invoice_status` 與 `invoice_query` 兩層即時查驗；任一層顯示已作廢、已註銷或異動等待中都要阻擋。
 
 ### 判斷矩陣
 
@@ -87,7 +88,7 @@ OpenKao 實體列印成功後，再呼叫此 API 取得一次光貿列印資料�
 
 ### 作廢流程
 
-- [x] `voidInvoice()` 讀到本機發票後，立即用發票號碼呼叫 `invoice_status`，不可使用舊資料或快取結果。
+- [x] `voidInvoice()` 讀到本機發票後，立即用發票號碼呼叫 `invoice_status` 與 `invoice_query`，不可使用舊資料或快取結果。
 - [x] 只有共用判斷確認為 `C0401` 後，才呼叫光貿 `f0501`。
 - [x] `f0501` 成功後才將本機發票改為 `voided`，並停止尚未開始的列印工作；查驗失敗或作廢失敗時不可先改本機狀態。
 - [x] 保留目前 owner-only 權限及公司隔離；狀態查詢使用該發票所屬公司的統編與 App Key。
@@ -95,10 +96,10 @@ OpenKao 實體列印成功後，再呼叫此 API 取得一次光貿列印資料�
 
 ### 補印流程
 
-- [x] `reprintInvoice()` 建立新 `print_job` 前，立即呼叫 `invoice_status`。
+- [x] `reprintInvoice()` 建立新 `print_job` 前，立即呼叫 `invoice_status` 與 `invoice_query`。
 - [x] 只有共用判斷確認為 `C0401` 後，才可建立 `isReprint = true` 的列印工作。
 - [x] 狀態不合格、查無資料或暫時無法確認時，不可建立任何補印工作。
-- [x] 若本機缺少條碼或左右 QRCode，可再使用既有 `invoice_query` 修復資料；`invoice_query` 只負責內容補查，不能取代 `invoice_status` 的資格判斷。
+- [x] `invoice_query` 同時負責補查異動排程與修復本機缺少的條碼或左右 QRCode；它是 `invoice_status` 之後的第二層查驗，不是用來取代第一層。
 - [x] 保留目前 owner／staff 可補印、owner 才可作廢的權限規則。
 
 ## P1：實體列印成功後同步光貿列印註記
@@ -156,7 +157,7 @@ OpenKao 實體列印成功後，再呼叫此 API 取得一次光貿列印資料�
 ### Worker integration 測試
 
 - [x] 光貿回 `C0401` 時，作廢才會接著呼叫 `f0501`。
-- [x] 光貿回 `NOT_FOUND`、`C0501`、`C0701`、等待作廢或查詢失敗時，作廢不得呼叫 `f0501`，補印不得新增 `print_job`。
+- [x] 光貿回 `NOT_FOUND`、`C0501`、`C0701`、等待作廢或查詢失敗時，作廢不得呼叫 `f0501`，補印不得新增 `print_job`；涵蓋 `invoice_status = C0401` 但 `invoice_query.data.wait = C0501` 的實測時序。
 - [x] 補印通過查驗後建立的新工作必須保留 `isReprint = true` 及原發票正式 payload。
 - [x] 正本實體列印成功回報後，呼叫 `invoice_print` type `1`；補印成功回報後使用 type `2`。
 - [x] 實體列印失敗時不呼叫 `invoice_print`。

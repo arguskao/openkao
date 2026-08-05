@@ -1,5 +1,6 @@
 import {
   AmegoTransportError,
+  normalizeAmegoInvoiceStatusResponse,
   queryAmegoInvoiceByNumber,
   queryAmegoInvoiceStatus,
   sanitizeAmegoResponse,
@@ -395,9 +396,46 @@ async function verifyAmegoInvoiceIssued(
     "invoice",
     row.id,
     "invoice.status.checked",
-    amegoInvoiceStatusAuditDetails(result, operation)
+    {
+      source: "invoice_status",
+      ...amegoInvoiceStatusAuditDetails(result, operation)
+    }
   );
   requireAmegoInvoiceIssued(result, row.invoice_number);
+
+  let queryResult;
+  try {
+    queryResult = await queryAmegoInvoiceByNumber({
+      invoice: settings.invoiceAccount,
+      appKey: settings.appKey,
+      invoiceNumber: row.invoice_number,
+      apiBaseUrl: env.AMEGO_API_BASE_URL
+    });
+  } catch (error) {
+    if (!(error instanceof AmegoTransportError)) throw error;
+    await writeAuditLog(env, session, "invoice", row.id, "invoice.status.check_failed", {
+      source: "invoice_query",
+      operation,
+      invoiceNumber: row.invoice_number,
+      transportError: error.code,
+      upstreamStatus: error.status
+    });
+    throw new HttpError(502, "amego_invoice_status_unavailable");
+  }
+
+  const queryState = normalizeAmegoInvoiceStatusResponse(queryResult.raw, row.invoice_number);
+  await writeAuditLog(
+    env,
+    session,
+    "invoice",
+    row.id,
+    "invoice.status.checked",
+    {
+      source: "invoice_query",
+      ...amegoInvoiceStatusAuditDetails(queryState, operation)
+    }
+  );
+  requireAmegoInvoiceIssued(queryState, row.invoice_number);
 }
 
 async function repairInvoicePrintPayload(

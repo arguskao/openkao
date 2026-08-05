@@ -1296,7 +1296,7 @@ test("Worker integration: invoice management query, reprint, void, audit, and te
     assert.equal(actions.results.some((row) => row.action === "invoice.status.checked"), true);
     assert.equal(actions.results.some((row) => row.action === "invoice.reprint.created"), true);
     assert.equal(actions.results.some((row) => row.action === "invoice.void.completed"), true);
-    assert.equal(endpoints.filter((url) => url.endsWith("/invoice_query")).length, 2);
+    assert.equal(endpoints.filter((url) => url.endsWith("/invoice_query")).length, 4);
     assert.equal(endpoints.filter((url) => url.endsWith("/invoice_status")).length, 3);
     assert.equal(endpoints.filter((url) => url.endsWith("/f0501")).length, 1);
   } finally {
@@ -1342,6 +1342,18 @@ test("Worker integration: successful local original and reprint sync Amego print
           invoice_status: 99,
           print_mark: "N",
           cancel_date: 0
+        }
+      });
+    }
+    if (url.endsWith("/invoice_query")) {
+      assert.deepEqual(data, { type: "invoice", invoice_number: "PQ12345678" });
+      return Response.json({
+        code: 0,
+        data: {
+          invoice_number: "PQ12345678",
+          invoice_type: "C0401",
+          invoice_status: 99,
+          wait: []
         }
       });
     }
@@ -1558,7 +1570,7 @@ test("Worker integration: void and reprint require a remotely issued invoice", a
   ).bind(tenant.company.id).run();
 
   const originalFetch = globalThis.fetch;
-  let statusMode: "not_found" | "voided" | "cancelled" | "pending" | "unavailable" = "not_found";
+  let statusMode: "not_found" | "voided" | "cancelled" | "pending" | "query_pending" | "unavailable" = "not_found";
   let voidCalls = 0;
   globalThis.fetch = async (input) => {
     const url = String(input);
@@ -1598,8 +1610,19 @@ test("Worker integration: void and reprint require a remotely issued invoice", a
         data: {
           invoice_number: "MN12345678",
           invoice_type: "C0401",
-          invoice_status: 31,
-          wait: [{ invoice_type: "C0501" }]
+          invoice_status: 2,
+          wait: statusMode === "pending" ? [{ invoice_type: "C0501" }] : []
+        }
+      });
+    }
+    if (url.endsWith("/invoice_query")) {
+      return Response.json({
+        code: 0,
+        data: {
+          invoice_number: "MN12345678",
+          invoice_type: "C0401",
+          invoice_status: 2,
+          wait: statusMode === "query_pending" ? [{ invoice_type: "C0501" }] : []
         }
       });
     }
@@ -1649,6 +1672,19 @@ test("Worker integration: void and reprint require a remotely issued invoice", a
     });
     assert.equal(pendingVoid.status, 409);
     assert.equal((await pendingVoid.json() as { code: string }).code, "amego_invoice_change_pending");
+
+    statusMode = "query_pending";
+    const queryPendingReprint = await api(env, `/api/invoices/${created.invoiceId}/reprint`, {
+      method: "POST", authToken: tenant.authToken, body: {}
+    });
+    assert.equal(queryPendingReprint.status, 409);
+    assert.equal((await queryPendingReprint.json() as { code: string }).code, "amego_invoice_change_pending");
+
+    const queryPendingVoid = await api(env, `/api/invoices/${created.invoiceId}/void`, {
+      method: "POST", authToken: tenant.authToken, body: {}
+    });
+    assert.equal(queryPendingVoid.status, 409);
+    assert.equal((await queryPendingVoid.json() as { code: string }).code, "amego_invoice_change_pending");
 
     statusMode = "unavailable";
     const unavailableReprint = await api(env, `/api/invoices/${created.invoiceId}/reprint`, {

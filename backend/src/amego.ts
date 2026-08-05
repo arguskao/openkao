@@ -154,7 +154,7 @@ export async function queryAmegoInvoiceStatus(input: {
     timeoutMs: input.timeoutMs,
     fetcher: input.fetcher
   });
-  return normalizeAmegoInvoiceStatus(result.raw, input.invoiceNumber);
+  return normalizeAmegoInvoiceStatusResponse(result.raw, input.invoiceNumber);
 }
 
 export async function requestAmegoInvoicePrint(input: {
@@ -284,7 +284,7 @@ function normalizeAmegoResult(raw: Record<string, unknown>): AmegoInvoiceResult 
   };
 }
 
-function normalizeAmegoInvoiceStatus(
+export function normalizeAmegoInvoiceStatusResponse(
   raw: Record<string, unknown>,
   requestedInvoiceNumber: string
 ): AmegoInvoiceStatusResult {
