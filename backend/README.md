@@ -103,6 +103,7 @@ Endpoints:
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
+- `DELETE /api/account` (requires the current password; owners delete the company workspace, staff delete their own account)
 - `GET /api/devices/me`
 - `GET /api/devices`
 - `POST /api/devices`

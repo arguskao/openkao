@@ -601,6 +601,129 @@ test("Worker integration: owner manages staff and staff cannot mutate catalog", 
   assert.equal(disabledLogin.status, 403);
 });
 
+test("Worker integration: staff can permanently delete their own account", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "selfdelete", "45671234");
+  await env.DB.prepare(
+    `UPDATE companies SET max_bound_devices = 2 WHERE id = ?`
+  ).bind(tenant.company.id).run();
+
+  const created = await apiJson<{ member: { id: number } }>(env, "/api/members", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: {
+      account: "deletestaff",
+      password: "staff-secret",
+      name: "刪除測試員工",
+      phone: "0911222333"
+    }
+  }, 201);
+  const staffLogin = await apiJson<{ authToken: string; device: { id: string } }>(env, "/api/auth/login", {
+    method: "POST",
+    body: {
+      account: "deletestaff",
+      password: "staff-secret",
+      deviceName: "Staff iPhone",
+      installationId: "self-delete-staff-device",
+      platform: "ios"
+    }
+  });
+
+  const wrongPassword = await api(env, "/api/account", {
+    method: "DELETE",
+    authToken: staffLogin.authToken,
+    body: { password: "wrong-secret" }
+  });
+  assert.equal(wrongPassword.status, 401);
+  assert.equal((await wrongPassword.json() as { code: string }).code, "invalid_credentials");
+  assert.ok(await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(created.member.id).first());
+
+  const deleted = await apiJson<{ ok: boolean; deletedScope: string }>(env, "/api/account", {
+    method: "DELETE",
+    authToken: staffLogin.authToken,
+    body: { password: "staff-secret" }
+  });
+  assert.deepEqual(deleted, { ok: true, deletedScope: "user" });
+
+  assert.equal(
+    await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(created.member.id).first(),
+    null
+  );
+  assert.equal(
+    await env.DB.prepare("SELECT id FROM devices WHERE id = ?").bind(staffLogin.device.id).first(),
+    null
+  );
+  const retainedPersonalAudit = await env.DB.prepare(
+    `SELECT id
+     FROM audit_logs
+     WHERE company_id = ?
+       AND details_json LIKE ?`
+  ).bind(tenant.company.id, "%deletestaff%").first();
+  assert.equal(retainedPersonalAudit, null);
+  assert.equal((await api(env, "/api/auth/me", { authToken: staffLogin.authToken })).status, 401);
+  assert.equal((await api(env, "/api/auth/me", { authToken: tenant.authToken })).status, 200);
+});
+
+test("Worker integration: owner account deletion removes the company workspace", async () => {
+  const env = await makeEnv();
+  const tenant = await registerTenant(env, "ownerdelete", "45672345");
+  await apiJson(env, "/api/catalog/categories", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: { name: "待刪分類", sortOrder: 0, status: "顯示" }
+  }, 201);
+  await apiJson(env, "/api/members", {
+    method: "POST",
+    authToken: tenant.authToken,
+    body: {
+      account: "deletedcompany_staff",
+      password: "staff-secret",
+      name: "待刪員工",
+      phone: ""
+    }
+  }, 201);
+  await apiJson(env, "/api/admin/print-jobs", {
+    method: "POST",
+    token: "admin-token",
+    body: printJobBody(tenant.company.id, "DL12345678", "owner-delete-job")
+  });
+
+  const deleted = await apiJson<{ ok: boolean; deletedScope: string }>(env, "/api/account", {
+    method: "DELETE",
+    authToken: tenant.authToken,
+    body: { password: "secret123" }
+  });
+  assert.deepEqual(deleted, { ok: true, deletedScope: "company" });
+
+  for (const table of [
+    "companies",
+    "users",
+    "devices",
+    "auth_sessions",
+    "categories",
+    "invoices",
+    "print_jobs",
+    "audit_logs"
+  ]) {
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM ${table} WHERE ${table === "companies" ? "id" : "company_id"} = ?`
+    ).bind(tenant.company.id).first<{ count: number }>();
+    assert.equal(row?.count, 0, `${table} should be deleted`);
+  }
+  assert.equal((await api(env, "/api/auth/me", { authToken: tenant.authToken })).status, 401);
+  const deletedLogin = await api(env, "/api/auth/login", {
+    method: "POST",
+    body: {
+      account: "ownerdelete",
+      password: "secret123",
+      deviceName: "Primary iPhone",
+      installationId: "ownerdelete-device",
+      platform: "ios"
+    }
+  });
+  assert.equal(deletedLogin.status, 401);
+});
+
 test("Worker integration: company device quota counts installations and releases one device", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "tenantquota", "66778899");

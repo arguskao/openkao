@@ -239,6 +239,23 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(requestCount, 2)
     }
 
+    func testDeleteAccountUsesAuthenticatedDeleteAndPassword() async throws {
+        let session = StubBackendURLSession { request in
+            XCTAssertEqual(request.url?.path, "/api/account")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer auth-token")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+
+            let body = try XCTUnwrap(request.httpBody)
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+            XCTAssertEqual(json["password"], "secret123")
+            return httpResponse(statusCode: 200, url: request.url, body: #"{"ok":true}"#)
+        }
+        let client = BackendClient(serverURL: "https://example.com", authToken: "auth-token", urlSession: session)
+
+        try await client.deleteAccount(password: "secret123")
+    }
+
     func testPendingPrintJobDecodesBackendDates() async throws {
         let session = StubBackendURLSession { request in
             httpResponse(

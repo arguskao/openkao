@@ -1,4 +1,5 @@
 import { adminPage } from "./admin-page";
+import { deleteOwnAccount } from "./account";
 import {
   authSessionExpiryTimestamp,
   bearerToken,
@@ -145,6 +146,12 @@ export default {
       if (url.pathname === "/api/auth/logout" && request.method === "POST") {
         const session = await requireUserSession(request, env, context);
         return reply(await logoutAccount(env, session));
+      }
+
+      if (url.pathname === "/api/account" && request.method === "DELETE") {
+        await enforceRateLimit(request, env, "account_delete", 5, 10 * 60);
+        const session = await requireUserSession(request, env, context);
+        return reply(await deleteOwnAccount(request, env, session));
       }
 
       if (url.pathname === "/api/members" && request.method === "GET") {

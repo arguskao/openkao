@@ -71,10 +71,10 @@ struct InvoiceManagementView: View {
             .navigationTitle("發票管理")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(role: .destructive) {
-                        Task { await store.logoutAccount() }
+                    NavigationLink {
+                        AccountSettingsView()
                     } label: {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                        Text("帳號")
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {

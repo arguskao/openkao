@@ -89,6 +89,15 @@ struct BackendClient {
         )
     }
 
+    func deleteAccount(password: String) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/api/account",
+            method: "DELETE",
+            authorization: .auth,
+            body: AccountDeleteRequest(password: password)
+        )
+    }
+
     func fetchStaffMembers() async throws -> [StaffMember] {
         let response: StaffMembersResponse = try await request(
             path: "/api/members?includeInactive=true",
@@ -653,6 +662,10 @@ private struct StaffUpdateRequest: Encodable {
 }
 
 private struct PasswordResetRequest: Encodable {
+    let password: String
+}
+
+private struct AccountDeleteRequest: Encodable {
     let password: String
 }
 

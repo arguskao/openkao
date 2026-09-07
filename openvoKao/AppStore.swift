@@ -434,6 +434,12 @@ final class AppStore: ObservableObject {
         logoutLocally()
     }
 
+    func deleteAccount(password: String) async throws {
+        try await authClient.deleteAccount(password: password)
+        printJobs = []
+        logoutLocally()
+    }
+
     func updateDeviceToken(_ token: String) {
         deviceProfile.deviceToken = token
         deviceProfile.isBound = false
