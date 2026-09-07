@@ -8,7 +8,7 @@ OpenvoKao is an iOS print-terminal app plus a Cloudflare Workers/D1 backend for 
 - `openvoKaoTests/`: iOS unit tests for receipt rendering, printer transport behavior, backend client behavior, and app-state workflows.
 - `backend/`: Cloudflare Worker API, D1 migrations, admin page, integration tests, and deployment scripts.
 - `docs/`: operational notes such as Cloudflare observability setup.
-- `todo2.md`: detailed engineering risk and remediation checklist.
+- `todo.md`: consolidated product milestones, engineering risks, implementation notes, and acceptance checklists.
 
 ## Data Flow
 
@@ -80,5 +80,7 @@ xcodebuild test -project openvoKao.xcodeproj -scheme openvoKao -destination 'pla
 - Build outputs such as `.ipa` files should be distributed through releases or CI artifact storage, not committed to Git. CI uploads the unsigned simulator app as `openvoKao-unsigned-simulator-app`.
 
 ## Deployment Notes
+
+Cloudflare deployment account: `arguskao@gmail.com`.
 
 The Worker config lives in `backend/wrangler.jsonc`. Because the product is not officially live yet, the current D1 database is used for development/testing. Revisit separate staging and production databases before real customer data goes live.
