@@ -1,5 +1,6 @@
 import { adminPage } from "./admin-page";
-import { deleteOwnAccount } from "./account";
+import { accountDeletionPage } from "./account-deletion-page";
+import { deleteAccountWithCredentials, deleteOwnAccount } from "./account";
 import {
   authSessionExpiryTimestamp,
   bearerToken,
@@ -124,6 +125,10 @@ export default {
         return reply(html(adminPage()));
       }
 
+      if (url.pathname === "/account-deletion" && request.method === "GET") {
+        return reply(html(accountDeletionPage()));
+      }
+
       if (url.pathname === "/api/health" && request.method === "GET") {
         return reply(json({ ok: true, service: "openvokao-backend" }));
       }
@@ -152,6 +157,11 @@ export default {
         await enforceRateLimit(request, env, "account_delete", 5, 10 * 60);
         const session = await requireUserSession(request, env, context);
         return reply(await deleteOwnAccount(request, env, session));
+      }
+
+      if (url.pathname === "/api/account-deletion" && request.method === "POST") {
+        await enforceRateLimit(request, env, "public_account_delete", 5, 10 * 60);
+        return reply(await deleteAccountWithCredentials(request, env));
       }
 
       if (url.pathname === "/api/members" && request.method === "GET") {

@@ -1,14 +1,15 @@
 # OpenvoKao Backend
 
-Cloudflare Workers + D1 backend for the OpenvoKao iOS print terminal.
+Cloudflare Workers + D1 backend for the OpenvoKao iOS and Android apps.
 
 ## What This Backend Does
 
 - Provides a simple admin web page at `/`.
+- Provides a public self-service account deletion page at `/account-deletion`.
 - Stores companies, users, devices, products, invoices, print jobs, print logs, and audit logs in D1.
 - Supports account registration/login, first-device binding, user roles, and device-token APIs for pending print jobs.
-- Receives printed / failed callbacks from iOS.
-- Keeps Amego credentials on the backend side. The iOS app should not store Amego App Key.
+- Receives printed / failed callbacks from the mobile apps.
+- Keeps Amego credentials on the backend side. Mobile apps should not store Amego App Key.
 
 ## Local Setup
 
@@ -87,11 +88,11 @@ Deploy after checks pass:
 npm run deploy
 ```
 
-## iOS API
+## App API
 
-iOS registers/logs in with an account, binds the first phone, and receives a device token. Device tokens are only shown when created or rotated.
+The mobile app registers/logs in with an account, binds the first phone, and receives a device token. Device tokens are only shown when created or rotated.
 
-All iOS API calls use:
+Authenticated app API calls use:
 
 ```http
 Authorization: Bearer <device-token>
@@ -104,6 +105,7 @@ Endpoints:
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
 - `DELETE /api/account` (requires the current password; owners delete the company workspace, staff delete their own account)
+- `POST /api/account-deletion` (public web deletion flow; requires the account and current password)
 - `GET /api/devices/me`
 - `GET /api/devices`
 - `POST /api/devices`

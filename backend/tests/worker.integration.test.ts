@@ -664,6 +664,38 @@ test("Worker integration: staff can permanently delete their own account", async
   assert.equal((await api(env, "/api/auth/me", { authToken: tenant.authToken })).status, 200);
 });
 
+test("Worker integration: public deletion page identifies the app and supports web deletion", async () => {
+  const env = await makeEnv();
+  const page = await api(env, "/account-deletion");
+  const html = await page.text();
+
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /^text\/html/);
+  assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+  assert.match(html, /OpenvoKao 帳號刪除/);
+  assert.match(html, /嘉萱漢方有限公司/);
+  assert.match(html, /\/api\/account-deletion/);
+  assert.match(html, /員工所屬公司的商品、發票與營業紀錄屬於公司/);
+
+  const tenant = await registerTenant(env, "webdelete", "45671235");
+  const wrongPassword = await api(env, "/api/account-deletion", {
+    method: "POST",
+    body: { account: "webdelete", password: "wrong-secret" }
+  });
+  assert.equal(wrongPassword.status, 401);
+  assert.ok(await env.DB.prepare("SELECT id FROM companies WHERE id = ?").bind(tenant.company.id).first());
+
+  const deleted = await apiJson<{ ok: boolean; deletedScope: string }>(env, "/api/account-deletion", {
+    method: "POST",
+    body: { account: "webdelete", password: "secret123" }
+  });
+  assert.deepEqual(deleted, { ok: true, deletedScope: "company" });
+  assert.equal(
+    await env.DB.prepare("SELECT id FROM companies WHERE id = ?").bind(tenant.company.id).first(),
+    null
+  );
+});
+
 test("Worker integration: owner account deletion removes the company workspace", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "ownerdelete", "45672345");

@@ -1,12 +1,25 @@
-import { normalizeUserRole, requirePassword } from "./auth";
+import { normalizeAccount, normalizeUserRole, requirePassword } from "./auth";
 import { verifyPassword } from "./crypto-utils";
 import type { UserSession } from "./domain-types";
 import { HttpError, json } from "./http";
 import type { Env } from "./types";
 import { readJson } from "./validation";
 
-type AccountRow = {
+type AccountPasswordRow = {
   password_hash: string | null;
+};
+
+type AccountCredentialsRow = {
+  id: number;
+  company_id: number | null;
+  role: string | null;
+  password_hash: string | null;
+};
+
+type DeletionIdentity = {
+  userId: number;
+  companyId: number;
+  role: string;
 };
 
 export async function deleteOwnAccount(
@@ -24,20 +37,53 @@ export async function deleteOwnAccount(
      WHERE id = ? AND company_id = ? AND is_active = 1`
   )
     .bind(session.user_id, session.company_id)
-    .first<AccountRow>();
+    .first<AccountPasswordRow>();
 
   if (!account?.password_hash || !(await verifyPassword(password, account.password_hash))) {
     throw new HttpError(401, "invalid_credentials");
   }
 
-  if (normalizeUserRole(session.role) === "owner") {
+  return deleteAccountData(env, {
+    userId: session.user_id,
+    companyId: session.company_id,
+    role: session.role
+  });
+}
+
+export async function deleteAccountWithCredentials(request: Request, env: Env): Promise<Response> {
+  const input = await readJson<Record<string, unknown>>(request);
+  const account = normalizeAccount(String(input.account ?? ""));
+  const password = typeof input.password === "string" ? input.password : "";
+  requirePassword(password);
+
+  const row = await env.DB.prepare(
+    `SELECT id, company_id, role, password_hash
+     FROM users
+     WHERE lower(email) = ?`
+  )
+    .bind(account)
+    .first<AccountCredentialsRow>();
+
+  if (!row?.company_id || !row.password_hash || !(await verifyPassword(password, row.password_hash))) {
+    throw new HttpError(401, "invalid_credentials");
+  }
+
+  return deleteAccountData(env, {
+    userId: row.id,
+    companyId: row.company_id,
+    role: row.role ?? "staff"
+  });
+}
+
+async function deleteAccountData(env: Env, identity: DeletionIdentity): Promise<Response> {
+  if (normalizeUserRole(identity.role) === "owner") {
     // The company owns all tenant-scoped data. Its foreign keys cascade to
     // users, sessions, devices, catalog data, invoices, jobs, and audit logs.
     await env.DB.prepare(
       `DELETE FROM companies
        WHERE id = ?`
     )
-      .bind(session.company_id)
+      .bind(identity.companyId)
       .run();
 
     return json({ ok: true, deletedScope: "company" });
@@ -62,7 +108,7 @@ export async function deleteOwnAccount(
            WHERE other.device_id = devices.id
              AND other.user_id != ?
          )`
-    ).bind(session.company_id, session.user_id, session.company_id, session.user_id),
+    ).bind(identity.companyId, identity.userId, identity.companyId, identity.userId),
     // Membership and failed-login audit entries can contain the account's
     // name, phone, or account value in their details payload.
     env.DB.prepare(
@@ -70,13 +116,13 @@ export async function deleteOwnAccount(
        WHERE company_id = ?
          AND target_id = ?
          AND target_type IN ('user', 'auth')`
-    ).bind(session.company_id, String(session.user_id)),
+    ).bind(identity.companyId, String(identity.userId)),
     env.DB.prepare(
       `DELETE FROM users
        WHERE id = ?
          AND company_id = ?
          AND role != 'owner'`
-    ).bind(session.user_id, session.company_id)
+    ).bind(identity.userId, identity.companyId)
   ]);
 
   return json({ ok: true, deletedScope: "user" });

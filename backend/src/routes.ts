@@ -1,10 +1,12 @@
 export function allowedMethodsForPath(pathname: string): string[] {
+  if (pathname === "/account-deletion") return ["GET"];
   if (pathname === "/api/health") return ["GET"];
   if (pathname === "/api/auth/register") return ["POST"];
   if (pathname === "/api/auth/login") return ["POST"];
   if (pathname === "/api/auth/me") return ["GET"];
   if (pathname === "/api/auth/logout") return ["POST"];
   if (pathname === "/api/account") return ["DELETE"];
+  if (pathname === "/api/account-deletion") return ["POST"];
   if (pathname === "/api/members") return ["GET", "POST"];
   if (/^\/api\/members\/[^/]+$/.test(pathname)) return ["PUT", "DELETE"];
   if (/^\/api\/members\/[^/]+\/reset-password$/.test(pathname)) return ["POST"];
