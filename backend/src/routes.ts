@@ -1,5 +1,6 @@
 export function allowedMethodsForPath(pathname: string): string[] {
   if (pathname === "/account-deletion") return ["GET"];
+  if (pathname === "/privacy") return ["GET"];
   if (pathname === "/api/health") return ["GET"];
   if (pathname === "/api/auth/register") return ["POST"];
   if (pathname === "/api/auth/login") return ["POST"];

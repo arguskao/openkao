@@ -1,6 +1,7 @@
 import { adminPage } from "./admin-page";
 import { accountDeletionPage } from "./account-deletion-page";
 import { deleteAccountWithCredentials, deleteOwnAccount } from "./account";
+import { privacyPage } from "./privacy-page";
 import {
   authSessionExpiryTimestamp,
   bearerToken,
@@ -127,6 +128,10 @@ export default {
 
       if (url.pathname === "/account-deletion" && request.method === "GET") {
         return reply(html(accountDeletionPage()));
+      }
+
+      if (url.pathname === "/privacy" && request.method === "GET") {
+        return reply(html(privacyPage()));
       }
 
       if (url.pathname === "/api/health" && request.method === "GET") {

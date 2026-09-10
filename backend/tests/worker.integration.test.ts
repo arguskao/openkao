@@ -696,6 +696,23 @@ test("Worker integration: public deletion page identifies the app and supports w
   );
 });
 
+test("Worker integration: privacy page publishes the policy and Data safety disclosure", async () => {
+  const env = await makeEnv();
+  const page = await api(env, "/privacy");
+  const html = await page.text();
+
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /^text\/html/);
+  assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+  assert.match(html, /OpenvoKao 隱私權政策/);
+  assert.match(html, /Data safety 公開摘要/);
+  assert.match(html, /嘉萱漢方有限公司/);
+  assert.match(html, /wii543@gmail\.com/);
+  assert.match(html, /href="\/account-deletion"/);
+  assert.match(html, /installation UUID/);
+  assert.match(html, /不讀取、保存或上傳裝置位置/);
+});
+
 test("Worker integration: owner account deletion removes the company workspace", async () => {
   const env = await makeEnv();
   const tenant = await registerTenant(env, "ownerdelete", "45672345");

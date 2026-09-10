@@ -6,6 +6,7 @@ Cloudflare Workers + D1 backend for the OpenvoKao iOS and Android apps.
 
 - Provides a simple admin web page at `/`.
 - Provides a public self-service account deletion page at `/account-deletion`.
+- Provides the public Android privacy policy and Google Play Data safety summary at `/privacy`.
 - Stores companies, users, devices, products, invoices, print jobs, print logs, and audit logs in D1.
 - Supports account registration/login, first-device binding, user roles, and device-token APIs for pending print jobs.
 - Receives printed / failed callbacks from the mobile apps.
