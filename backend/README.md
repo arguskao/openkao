@@ -12,6 +12,13 @@ Cloudflare Workers + D1 backend for the OpenvoKao iOS and Android apps.
 - Receives printed / failed callbacks from the mobile apps.
 - Keeps Amego credentials on the backend side. Mobile apps should not store Amego App Key.
 
+Production public pages:
+
+- Privacy policy and Google Play Data safety summary: `https://openvokao-backend.arguskao.workers.dev/privacy`
+- Self-service account deletion: `https://openvokao-backend.arguskao.workers.dev/account-deletion`
+
+Both routes were deployed and verified on 2026-09-10. The privacy page source is `src/privacy-page.ts`; its integration test also checks the app/company identity, contact address, account-deletion link, device identifier disclosure, and location-data statement.
+
 ## Local Setup
 
 Install dependencies:
